@@ -34,7 +34,7 @@ Outputs
 
 Example
 -------
-python 12_train_embed_wsf.py \
+python 07_train_embed_wsf.py \
   --pca ~/data/aef_accra_2019/mosaic_accra_2019_pca8.tif \
   --wsf-features ~/data/WSF_Data/cropped_wsf_features.tif \
   --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
