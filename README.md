@@ -4,9 +4,10 @@ Weakly supervised downscaling experiments for Accra. The current pipeline uses
 fine-grid Earth observation embeddings and optional World Settlement Footprint
 (WSF) features to allocate coarse GHSL built-up surface totals onto a finer grid.
 
-The neural baselines are trained with coarse GHSL cell totals only. Fine-scale
-GHSL 10 m is used later as an external high-resolution reference/proxy for
-evaluation, not as a training label.
+The neural baselines are trained with coarse GHSL cell totals only. ESA
+WorldCover 2020 is used as the default out-of-pipeline categorical validation
+layer. GHSL 10 m remains available as an optional GHSL-family proxy comparison,
+but it is no longer the primary validation target.
 
 ## Data Sources
 
@@ -18,12 +19,12 @@ evaluation, not as a training label.
   100 m GHSL epochs from 1975-2020, predicting 2019, then aggregating to 1 km.
 - **WSF 2019**: used as a binary settlement support mask, as derived local
   density/distance features, and as the WSF-uniform baseline.
-- **ESA WorldCover 2020**: prepared as a future validation layer. Class `50`
-  is treated as built-up and is exported as a binary built mask aligned to the
-  downscaling grid.
-- **GHSL 10 m reference**: cropped separately for external fine-scale evaluation.
+- **ESA WorldCover 2020**: the default final validation layer. Class `50` is
+  treated as built-up; evaluation is categorical/binary agreement and spatial
+  plausibility assessment, not continuous built-surface error validation.
+- **GHSL 10 m reference**: cropped separately for optional fine-scale comparison.
   In this project this reference is the separate GHSL 2018 10 m product/pipeline,
-  so report it as an external proxy rather than literal same-year ground truth.
+  so report it as a GHSL-family proxy rather than literal same-year ground truth.
 
 ## Environment
 
@@ -48,7 +49,7 @@ plain `python`.
    - embeddings-only neural allocator.
    - embeddings + WSF neural allocator.
 5. Create visual diagnostics.
-6. Evaluate predictions quantitatively against the external GHSL 10 m reference.
+6. Evaluate predictions quantitatively against ESA WorldCover 2020.
 
 ## Data Download And Preprocessing
 
@@ -251,7 +252,45 @@ mamba run -n diss python scripts/08_compare_baselines.py \
 
 ## Quantitative Evaluation
 
-Run multi-scale quantitative evaluation against the external GHSL 10 m reference:
+Run categorical evaluation against ESA WorldCover 2020:
+
+```bash
+mamba run -n diss python scripts/09_evaluate_against_esa_worldcover.py \
+  --predictions ~/data/outputs/wsf_uniform_baseline.tif \
+                ~/data/outputs/embed_only_norm.tif \
+                ~/data/outputs/embed_wsf_norm.tif \
+  --names wsf_uniform embed_only embed_wsf \
+  --esa-worldcover ~/data/ESA_cover_2020/cropped_esa_worldcover_2020.tif \
+  --wsf ~/data/WSF_Data/cropped_wsf.tif \
+  --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
+  --built-class 50 \
+  --output-csv ~/data/outputs/evaluation_esa_metrics.csv \
+  --output-json ~/data/outputs/evaluation_esa_metrics.json \
+  --output-fig ~/data/outputs/evaluation_esa_summary.png \
+  --output-map-dir ~/data/outputs/evaluation_esa_maps
+```
+
+ESA WorldCover is used as an out-of-pipeline categorical land-cover proxy, not
+as continuous built-up-surface ground truth. Because ESA WorldCover provides
+class labels rather than built-surface area, the evaluation reports categorical
+agreement, mass concentration within ESA built-up cells, top-k overlap, hard
+non-built allocation flags, and class-conditioned diagnostics. These metrics
+should be interpreted as spatial plausibility diagnostics rather than same-unit
+error estimates.
+
+The ESA evaluator also reports absolute predicted mass in hard non-built
+classes, class-specific leakage into water, wetland, mangroves, bare/sparse
+vegetation, cropland, and grassland, top-k lift over ESA built-up prevalence,
+and top-k predicted-mass overlap with ESA built-up. If `--output-map-dir` is
+provided, it writes per-model rasters showing predicted mass placed in hard
+non-built classes and in water/wetland/mangrove classes.
+
+For top-k diagnostics, `esa_built_prevalence` gives the background share of
+valid pixels classified as ESA built-up, while `topk_esa_built_lift` reports
+`P(ESA built-up | top-k predicted) / P(ESA built-up)`. Leakage by land-cover
+class is available in the `hard_nonbuilt_by_class` metric group.
+
+The legacy GHSL 10 m evaluator remains available for optional proxy comparison:
 
 ```bash
 mamba run -n diss python scripts/09_evaluate_against_ghsl10m.py \
@@ -266,12 +305,3 @@ mamba run -n diss python scripts/09_evaluate_against_ghsl10m.py \
   --output-json ~/data/outputs/evaluation_metrics.json \
   --output-fig ~/data/outputs/evaluation_summary.png
 ```
-
-The evaluator writes a long-format CSV plus optional JSON and PNG summary. It
-reports native and aggregated-scale metrics including MAE, RMSE, bias, mass
-ratio, Pearson/Spearman correlation, quantile differences, top-k overlap,
-built-support precision/recall/F1, and WSF-conditioned diagnostics.
-
-Interpret these metrics as agreement with an independent fine-resolution proxy.
-The neural models are trained on coarse GHSL targets, not on the GHSL 10 m
-reference.
