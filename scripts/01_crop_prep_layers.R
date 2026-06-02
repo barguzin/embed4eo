@@ -24,6 +24,10 @@ wsf_data2 <- rast('~/data/WSF_Data/WSF2019_v1_-2_4.tif')
 print(crs(wsf_data))
 plot(wsf_data2)
 
+### read ESA WorldCover data
+esa_worldcover <- rast('~/data/ESA_cover_2020/ESA_WorldCover_10m_2020_v100_N03W003_Map.tif')
+print(crs(esa_worldcover))
+
 # read embeddings data 
 embed_tile <- rast('~/data/aef_accra_2019/x7dai37vmlntho3ws-0000008192-0000008192.tiff')
 embed_tile2 <- rast('~/data/aef_accra_2019/xkowq9ox8kqkx6nyq-0000008192-0000000000.tiff')
@@ -38,6 +42,44 @@ accra_bbox <- project(accra_bbox, crs(embed_template))
 
 # crop the template
 embed_template <- crop(embed_template, accra_bbox)
+
+# ---------------------------------------------------------------------------
+# ESA WorldCover validation layers
+# 10 m categorical land-cover product. Use nearest-neighbor projection and
+# resampling to preserve class codes. Class 50 is ESA built-up.
+# ---------------------------------------------------------------------------
+
+# crop first in ESA CRS to avoid projecting the full 3x3 degree tile
+accra_bbox_esa <- project(accra_bbox, crs(esa_worldcover))
+esa_cropped <- crop(esa_worldcover, accra_bbox_esa)
+
+# align exactly to embedding/downscaling grid
+esa_prj <- project(esa_cropped, crs(embed_template), method = "near")
+esa_aligned <- resample(esa_prj, embed_template, method = "near")
+names(esa_aligned) <- "esa_worldcover_2020"
+
+# binary built-up validation mask: ESA WorldCover class 50 only
+esa_built <- ifel(is.na(esa_aligned), NA, ifel(esa_aligned == 50, 1, 0))
+names(esa_built) <- "esa_built_2020"
+
+plot(esa_aligned)
+plot(esa_built)
+
+writeRaster(
+  esa_aligned,
+  filename = '~/data/ESA_cover_2020/cropped_esa_worldcover_2020.tif',
+  overwrite = TRUE,
+  wopt = list(datatype = "INT1U")
+)
+
+writeRaster(
+  esa_built,
+  filename = '~/data/ESA_cover_2020/cropped_esa_built_2020.tif',
+  overwrite = TRUE,
+  wopt = list(datatype = "INT1U")
+)
+
+message('Finished Processing ESA WorldCover validation layers')
 
 # re-project WSF to google reference CRS
 # IMPORTANT: use nearest-neighbor for binary raster

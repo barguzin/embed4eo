@@ -18,6 +18,9 @@ evaluation, not as a training label.
   100 m GHSL epochs from 1975-2020, predicting 2019, then aggregating to 1 km.
 - **WSF 2019**: used as a binary settlement support mask, as derived local
   density/distance features, and as the WSF-uniform baseline.
+- **ESA WorldCover 2020**: prepared as a future validation layer. Class `50`
+  is treated as built-up and is exported as a binary built mask aligned to the
+  downscaling grid.
 - **GHSL 10 m reference**: cropped separately for external fine-scale evaluation.
   In this project this reference is the separate GHSL 2018 10 m product/pipeline,
   so report it as an external proxy rather than literal same-year ground truth.
@@ -68,6 +71,20 @@ Download the WSF 2019 tiles used by the preprocessing script:
 bash scripts/00_get_WSF.sh
 ```
 
+### ESA WorldCover 2020
+
+Download the ESA WorldCover tile intersecting the Accra AOI:
+
+```bash
+bash scripts/00_get_ESA.sh
+```
+
+This saves the raw 2020 WorldCover tile under:
+
+```text
+~/data/ESA_cover_2020/
+```
+
 ### GHSL 2019 Coarse Training Layer
 
 Build the trend-derived 2019 GHSL BUILT-S layer:
@@ -95,6 +112,8 @@ Main outputs:
 - `~/data/aef_accra_2019/mosaic_accra_2019.tiff`
 - `~/data/WSF_Data/cropped_wsf.tif`
 - `~/data/WSF_Data/cropped_wsf_features.tif`
+- `~/data/ESA_cover_2020/cropped_esa_worldcover_2020.tif`
+- `~/data/ESA_cover_2020/cropped_esa_built_2020.tif`
 - `~/data/GHSL_BUILD/cropped_ghsl.tif`
 - `~/data/GHSL_BUILD/cropped_ghsl_raw_10m.tif`
 
