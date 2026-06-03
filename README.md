@@ -53,7 +53,8 @@ plain `python`.
 4. Run baselines:
    - WSF-uniform mass allocation.
    - embeddings-only neural allocator.
-   - embeddings + WSF neural allocator.
+   - embeddings + WSF weak neural allocator.
+   - optional embeddings + WSF differentiable-normalization allocator.
 5. Create visual diagnostics.
 6. Evaluate predictions quantitatively against ESA WorldCover, VIIRS, and GAIA.
 
@@ -231,12 +232,15 @@ mamba run -n diss python scripts/06_train_embed_only.py \
   --depth 4
 ```
 
-## Baseline 2: Embeddings + WSF Neural Allocator
+## Baseline 2: Embeddings + WSF Weak Neural Allocator
 
 This model concatenates the embedding PCA bands with WSF-derived features:
 binary WSF support, local WSF density at 5x5 and 11x11 windows, and distance to
-nearest WSF-built pixel. The loss adds a penalty for predicted mass outside WSF
-support.
+nearest WSF-built pixel. It is intentionally kept as the weak/simple baseline:
+the CNN predicts positive fine-scale values, the training loss compares
+aggregated raw predictions to coarse GHSL targets, and each cell is
+renormalized only after inference to preserve coarse mass exactly. Keep this
+script available for comparing against newer allocation objectives.
 
 ```bash
 mamba run -n diss python scripts/07_train_embed_wsf.py \
@@ -258,6 +262,47 @@ mamba run -n diss python scripts/07_train_embed_wsf.py \
   --depth 4 \
   --wsf-band 1
 ```
+
+## Baseline 2b: Embeddings + WSF Differentiable-Normalization Allocator
+
+This variant keeps the same small CNN architecture and inputs, but changes the
+training target. The CNN predicts positive raw scores, those scores are
+differentiably normalized within each coarse cell, and the normalized shares are
+multiplied by the corresponding GHSL target during training. TV and WSF-support
+losses are applied to this mass-preserving fine prediction.
+
+The exported `--pred-norm-out` raster is exact CPU-renormalized before writing.
+The JSON report separates raw score diagnostics, differentiable
+mass-preservation checks, final mass-preservation checks, and denominator
+diagnostics. Mass-preservation fields are sanity checks from enforced
+normalization, not validation metrics for predictive skill.
+
+```bash
+mamba run -n diss python scripts/07_train_embed_wsf_diffnorm.py \
+  --pca ~/data/aef_accra_2019/mosaic_accra_2019_pca8.tif \
+  --wsf-features ~/data/WSF_Data/cropped_wsf_features.tif \
+  --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
+  --lookup ~/data/GHSL_BUILD/cropped_ghsl_cell_lookup.csv \
+  --value-column ghsl_value_adj \
+  --pred-out ~/data/outputs/embed_wsf_diffnorm_raw.tif \
+  --pred-norm-out ~/data/outputs/embed_wsf_diffnorm_norm.tif \
+  --report ~/data/outputs/embed_wsf_diffnorm_report.json \
+  --loss-plot ~/data/outputs/embed_wsf_diffnorm_loss.png \
+  --model-out ~/data/outputs/embed_wsf_diffnorm_model.pt \
+  --epochs 500 \
+  --lr 1e-3 \
+  --tv-weight 5e-5 \
+  --wsf-weight 0.1 \
+  --score-floor 1e-6 \
+  --hidden 32 \
+  --depth 4 \
+  --wsf-band 1
+```
+
+Use `embed_wsf_norm.tif` for the weak baseline and
+`embed_wsf_diffnorm_norm.tif` for the differentiable-normalization variant.
+Keeping separate filenames avoids overwriting the baseline products during
+comparison runs.
 
 ## Visual Diagnostics
 
@@ -288,6 +333,19 @@ mamba run -n diss python scripts/08_compare_baselines.py \
   --ghsl ~/data/GHSL_BUILD/cropped_ghsl.tif \
   --wsf ~/data/WSF_Data/cropped_wsf.tif \
   --context-output ~/data/outputs/baseline_context.png
+```
+
+To include the differentiable-normalization variant in evaluation scripts that
+accept `--predictions` and `--names`, append:
+
+```text
+~/data/outputs/embed_wsf_diffnorm_norm.tif
+```
+
+and add a matching model name such as:
+
+```text
+embed_wsf_diffnorm
 ```
 
 ## Quantitative Evaluation
