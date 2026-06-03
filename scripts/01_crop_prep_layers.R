@@ -24,6 +24,24 @@ wsf_data2 <- rast('~/data/WSF_Data/WSF2019_v1_-2_4.tif')
 print(crs(wsf_data))
 plot(wsf_data2)
 
+### read ESA WorldCover data
+esa_worldcover <- rast('~/data/ESA_cover_2020/ESA_WorldCover_10m_2020_v100_N03W003_Map.tif')
+print(crs(esa_worldcover))
+
+### read VIIRS WorldPop covariate data
+viirs_fvf <- rast('~/data/tmp/gha_viirs_fvf_2019_100m_v1.tif')
+print(crs(viirs_fvf))
+
+### read GAIA impervious-area tiles
+gaia_files <- c(
+  '~/data/tmp/GAIA_1985_2022_-5_5.tif',
+  '~/data/tmp/GAIA_1985_2022_-5_10.tif',
+  '~/data/tmp/GAIA_1985_2022_0_10.tif'
+)
+gaia_tiles <- sprc(lapply(gaia_files, rast))
+gaia_mosaic <- mosaic(gaia_tiles, fun = 'first')
+print(crs(gaia_mosaic))
+
 # read embeddings data 
 embed_tile <- rast('~/data/aef_accra_2019/x7dai37vmlntho3ws-0000008192-0000008192.tiff')
 embed_tile2 <- rast('~/data/aef_accra_2019/xkowq9ox8kqkx6nyq-0000008192-0000000000.tiff')
@@ -38,6 +56,99 @@ accra_bbox <- project(accra_bbox, crs(embed_template))
 
 # crop the template
 embed_template <- crop(embed_template, accra_bbox)
+
+# ---------------------------------------------------------------------------
+# ESA WorldCover validation layers
+# 10 m categorical land-cover product. Use nearest-neighbor projection and
+# resampling to preserve class codes. Class 50 is ESA built-up.
+# ---------------------------------------------------------------------------
+
+# crop first in ESA CRS to avoid projecting the full 3x3 degree tile
+accra_bbox_esa <- project(accra_bbox, crs(esa_worldcover))
+esa_cropped <- crop(esa_worldcover, accra_bbox_esa)
+
+# align exactly to embedding/downscaling grid
+esa_prj <- project(esa_cropped, crs(embed_template), method = "near")
+esa_aligned <- resample(esa_prj, embed_template, method = "near")
+names(esa_aligned) <- "esa_worldcover_2020"
+
+# binary built-up validation mask: ESA WorldCover class 50 only
+esa_built <- ifel(is.na(esa_aligned), NA, ifel(esa_aligned == 50, 1, 0))
+names(esa_built) <- "esa_built_2020"
+
+plot(esa_aligned)
+plot(esa_built)
+
+writeRaster(
+  esa_aligned,
+  filename = '~/data/ESA_cover_2020/cropped_esa_worldcover_2020.tif',
+  overwrite = TRUE,
+  wopt = list(datatype = "INT1U")
+)
+
+writeRaster(
+  esa_built,
+  filename = '~/data/ESA_cover_2020/cropped_esa_built_2020.tif',
+  overwrite = TRUE,
+  wopt = list(datatype = "INT1U")
+)
+
+message('Finished Processing ESA WorldCover validation layers')
+
+# ---------------------------------------------------------------------------
+# VIIRS validation layer
+# Continuous 100 m WorldPop VIIRS FVF covariate. Crop to the AOI and project to
+# the embedding CRS. The evaluator aggregates model predictions to this VIIRS
+# grid before computing validation metrics.
+# ---------------------------------------------------------------------------
+
+accra_bbox_viirs <- project(accra_bbox, crs(viirs_fvf))
+viirs_cropped <- crop(viirs_fvf, accra_bbox_viirs)
+viirs_aligned <- project(viirs_cropped, crs(embed_template), method = "bilinear")
+names(viirs_aligned) <- "viirs_fvf_2019_100m"
+
+plot(viirs_aligned)
+
+dir.create('~/data/VIIRS', recursive = TRUE, showWarnings = FALSE)
+writeRaster(
+  viirs_aligned,
+  filename = '~/data/VIIRS/cropped_viirs_fvf_2019_100m.tif',
+  overwrite = TRUE,
+  wopt = list(datatype = "FLT4S")
+)
+
+message('Finished Processing VIIRS validation layer')
+
+# ---------------------------------------------------------------------------
+# GAIA validation layer
+# GAIA is a 30 m categorical impervious-area product where 0 is non-urban and
+# values 2:38 encode the first year a pixel became urban. For 2019 validation,
+# values >= 4 are impervious by 2019; values 0, 2, and 3 are non-impervious by
+# 2019. The evaluator aggregates model predictions to this GAIA grid.
+# ---------------------------------------------------------------------------
+
+accra_bbox_gaia <- project(accra_bbox, crs(gaia_mosaic))
+gaia_cropped <- crop(gaia_mosaic, accra_bbox_gaia)
+gaia_impervious_2019 <- ifel(
+  is.na(gaia_cropped) | gaia_cropped == -128,
+  NA,
+  ifel(gaia_cropped >= 4, 1, 0)
+)
+
+gaia_aligned <- project(gaia_impervious_2019, crs(embed_template), method = "near")
+names(gaia_aligned) <- "gaia_impervious_2019"
+
+plot(gaia_aligned)
+
+dir.create('~/data/GAIA', recursive = TRUE, showWarnings = FALSE)
+writeRaster(
+  gaia_aligned,
+  filename = '~/data/GAIA/cropped_gaia_impervious_2019.tif',
+  overwrite = TRUE,
+  wopt = list(datatype = "INT1U")
+)
+
+message('Finished Processing GAIA validation layer')
 
 # re-project WSF to google reference CRS
 # IMPORTANT: use nearest-neighbor for binary raster

@@ -1,21 +1,170 @@
-# Setting up and running
+# embed4eo
 
-## Downloading Data 
+Weakly supervised downscaling experiments for Accra. The current pipeline uses
+fine-grid Earth observation embeddings and optional World Settlement Footprint
+(WSF) features to allocate coarse GHSL built-up surface totals onto a finer grid.
 
-ssdfsdfsd
+The neural baselines are trained with coarse GHSL cell totals only. ESA
+WorldCover 2020 is used as the default out-of-pipeline categorical validation
+layer. GHSL 10 m remains available as an optional GHSL-family proxy comparison,
+but it is no longer the primary validation target.
 
-## Preprocessing
+## Data Sources
 
-### Cropping the layers 
+- **AEF / Google Earth observation embeddings**: downloaded from Source
+  Cooperative and cropped to the Accra AOI. These are the main fine-grid
+  predictor features.
+- **GHSL BUILT-S coarse training target**: a 2019 1 km built-surface raster
+  derived in `scripts/00_fit_GHSL_2019.R` by fitting a per-pixel linear trend to
+  100 m GHSL epochs from 1975-2020, predicting 2019, then aggregating to 1 km.
+- **WSF 2019**: used as a binary settlement support mask, as derived local
+  density/distance features, and as the WSF-uniform baseline.
+- **ESA WorldCover 2020**: the default final validation layer. Class `50` is
+  treated as built-up; evaluation is categorical/binary agreement and spatial
+  plausibility assessment, not continuous built-surface error validation.
+- **WorldPop VIIRS FVF 2019**: a continuous 100 m nighttime-lights covariate
+  used as a second validation line. Predictions are aggregated to the VIIRS
+  grid before correlation and top-k overlap are computed.
+- **GAIA 2019 impervious extent**: a 30 m binary impervious-area validation
+  layer derived from the GAIA 1985-2022 encoded tiles. Predictions are
+  aggregated to the GAIA grid for binary/categorical diagnostics.
+- **GHSL 10 m reference**: cropped separately for optional fine-scale comparison.
+  In this project this reference is the separate GHSL 2018 10 m product/pipeline,
+  so report it as a GHSL-family proxy rather than literal same-year ground truth.
 
-Once the data is downloaded you have the study_area vector for the bounding box, you can run *01_crop_prep_layers.R*. 
+## Environment
 
-### PCA on embeddings 
-
-Run the PCA analysis on embeddings by calling the corresponding Python script
+Most scripts assume the local geospatial Python/R environment used during
+development. On this machine that environment is named `diss`, for example:
 
 ```bash
-python 02_pca_embeddings.py \
+mamba run -n diss python scripts/09_evaluate_against_ghsl10m.py --help
+```
+
+If the environment is already activated, the commands below can be run with
+plain `python`.
+
+## Pipeline Overview
+
+1. Download/prep AEF embeddings, WSF, and GHSL layers.
+2. Reduce the embedding raster with PCA.
+3. Create a fine-grid raster of coarse GHSL cell IDs and a lookup table of
+   coarse-cell targets.
+4. Run baselines:
+   - WSF-uniform mass allocation.
+   - embeddings-only neural allocator.
+   - embeddings + WSF neural allocator.
+5. Create visual diagnostics.
+6. Evaluate predictions quantitatively against ESA WorldCover, VIIRS, and GAIA.
+
+## Data Download And Preprocessing
+
+### AEF Embeddings
+
+Download AEF tiles intersecting the Accra bounding box:
+
+```bash
+bash scripts/00_run_accra_aef.sh --outdir ~/data/aef_accra_2019 --years 2019
+```
+
+The download script filters the Source Cooperative AEF annual index to the Accra
+AOI and can download both VRT and TIFF assets.
+
+### WSF 2019
+
+Download the WSF 2019 tiles used by the preprocessing script:
+
+```bash
+bash scripts/00_get_WSF.sh
+```
+
+### ESA WorldCover 2020
+
+Download the ESA WorldCover tile intersecting the Accra AOI:
+
+```bash
+bash scripts/00_get_ESA.sh
+```
+
+This saves the raw 2020 WorldCover tile under:
+
+```text
+~/data/ESA_cover_2020/
+```
+
+### WorldPop VIIRS FVF 2019
+
+Download the Ghana VIIRS FVF 2019 100 m covariate:
+
+```bash
+bash scripts/00_get_VIIRS.sh
+```
+
+This saves the raw raster to:
+
+```text
+~/data/tmp/gha_viirs_fvf_2019_100m_v1.tif
+```
+
+### GAIA 2019 Impervious Extent
+
+Place the GAIA tiles covering Accra in:
+
+```text
+~/data/tmp/
+```
+
+The preprocessing script currently expects:
+
+- `~/data/tmp/GAIA_1985_2022_-5_5.tif`
+- `~/data/tmp/GAIA_1985_2022_-5_10.tif`
+- `~/data/tmp/GAIA_1985_2022_0_10.tif`
+
+GAIA stores first-impervious year as encoded values. For the 2019 validation
+layer, values `>= 4` are treated as impervious by 2019, while `0`, `2`, and `3`
+are treated as not impervious by 2019.
+
+### GHSL 2019 Coarse Training Layer
+
+Build the trend-derived 2019 GHSL BUILT-S layer:
+
+```bash
+Rscript scripts/00_fit_GHSL_2019.R
+```
+
+This writes:
+
+- `~/data/GHSL_BUILD/GHS_BUILT_S_E2019_R2023A_54009_100_trend_100m.tif`
+- `~/data/GHSL_BUILD/GHS_BUILT_S_E2019_R2023A_54009_1000_sum_trend.tif`
+
+### Crop And Align Layers
+
+Once the source data and AOI vector are available, crop and align the layers to
+the embedding grid:
+
+```bash
+Rscript scripts/01_crop_prep_layers.R
+```
+
+Main outputs:
+
+- `~/data/aef_accra_2019/mosaic_accra_2019.tiff`
+- `~/data/WSF_Data/cropped_wsf.tif`
+- `~/data/WSF_Data/cropped_wsf_features.tif`
+- `~/data/ESA_cover_2020/cropped_esa_worldcover_2020.tif`
+- `~/data/ESA_cover_2020/cropped_esa_built_2020.tif`
+- `~/data/VIIRS/cropped_viirs_fvf_2019_100m.tif`
+- `~/data/GAIA/cropped_gaia_impervious_2019.tif`
+- `~/data/GHSL_BUILD/cropped_ghsl.tif`
+- `~/data/GHSL_BUILD/cropped_ghsl_raw_10m.tif`
+
+## PCA On Embeddings
+
+Fit IncrementalPCA on sampled valid embedding pixels and write an 8-band PCA
+raster:
+
+```bash
+mamba run -n diss python scripts/02_pca_embeddings.py \
   --input ~/data/aef_accra_2019/mosaic_accra_2019.tiff \
   --output ~/data/aef_accra_2019/mosaic_accra_2019_pca8.tif \
   --model ~/data/aef_accra_2019/mosaic_accra_2019_pca8.joblib \
@@ -26,51 +175,46 @@ python 02_pca_embeddings.py \
   --batch-size 20000
 ```
 
-### Build the fine-to-coarse GHSL cell-ID raster
+## Fine-To-Coarse GHSL Cell IDs
 
-We will need per-cell GHSL totals for allocation tasks. To generate these, simply run: 
+Create a fine-grid cell-ID raster and a lookup table of GHSL coarse-cell totals.
+The neural models use `ghsl_value_adj`, which adjusts coarse-cell mass by the AOI
+overlap fraction.
 
 ```bash
-python 03_make_cell_ids.py \
+mamba run -n diss python scripts/03_make_cell_ids.py \
   --coarse ~/data/GHSL_BUILD/cropped_ghsl.tif \
   --template ~/data/aef_accra_2019/mosaic_accra_2019_pca8.tif \
+  --aoi ~/data/aux/bbox_accra_dissolve.gpkg \
   --out-raster ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
   --out-lookup ~/data/GHSL_BUILD/cropped_ghsl_cell_lookup.csv
 ```
 
-## Baseline 0: binary WSF
+## Baseline 0: WSF-Uniform
+
+This mass-preserving baseline allocates each coarse GHSL value uniformly across
+WSF-positive fine pixels inside that coarse cell. If a cell has no WSF-positive
+fine pixels, it falls back to uniform allocation across valid fine pixels.
 
 ```bash
-python 04_baseline_wsf_uniform.py \
+mamba run -n diss python scripts/04_baseline_wsf_uniform.py \
   --wsf ~/data/WSF_Data/cropped_wsf.tif \
   --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
   --lookup ~/data/GHSL_BUILD/cropped_ghsl_cell_lookup.csv \
+  --value-column ghsl_value_adj \
   --output ~/data/outputs/wsf_uniform_baseline.tif \
   --report ~/data/outputs/wsf_uniform_baseline_report.json \
-  --fallback ~/data/outputs/wsf_uniform_baseline_fallback_cells.tif \
+  --fallback ~/data/outputs/wsf_uniform_baseline_fallback_cells.tif
 ```
 
-## Visual Diagnostics - 1
+## Baseline 1: Embeddings-Only Neural Allocator
 
-asdasdas
-
-```bash
-python 05_plot_four_panel.py \
-  --ghsl ~/data/GHSL_BUILD/cropped_ghsl.tif \
-  --wsf ~/data/WSF_Data/cropped_wsf.tif \
-  --baseline ~/data/outputs/wsf_uniform_baseline.tif \
-  --fallback ~/data/outputs/wsf_uniform_baseline_fallback_cells.tif \
-  --output ~/data/outputs/wsf_uniform_four_panel.png \
-  --agg-factor 10 \
-  --title "WSF-uniform baseline"
-```
-
-## Baseline 1: Embeddings and No WSF
-
-asdasdas
+This model uses only PCA-reduced embedding bands. It predicts a positive fine
+surface, aggregates predictions back to GHSL coarse cells during training, and
+renormalizes each cell after inference to preserve coarse mass exactly.
 
 ```bash
-python 06_train_embed_only.py \
+mamba run -n diss python scripts/06_train_embed_only.py \
   --pca ~/data/aef_accra_2019/mosaic_accra_2019_pca8.tif \
   --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
   --lookup ~/data/GHSL_BUILD/cropped_ghsl_cell_lookup.csv \
@@ -87,12 +231,15 @@ python 06_train_embed_only.py \
   --depth 4
 ```
 
-## Baseline 2: Embeddings + WSF
+## Baseline 2: Embeddings + WSF Neural Allocator
 
-sasdfasd
+This model concatenates the embedding PCA bands with WSF-derived features:
+binary WSF support, local WSF density at 5x5 and 11x11 windows, and distance to
+nearest WSF-built pixel. The loss adds a penalty for predicted mass outside WSF
+support.
 
 ```bash
-python 07_train_embed_wsf.py \
+mamba run -n diss python scripts/07_train_embed_wsf.py \
   --pca ~/data/aef_accra_2019/mosaic_accra_2019_pca8.tif \
   --wsf-features ~/data/WSF_Data/cropped_wsf_features.tif \
   --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
@@ -112,20 +259,210 @@ python 07_train_embed_wsf.py \
   --wsf-band 1
 ```
 
-## Visualize All Baselines 
+## Visual Diagnostics
 
-asdas
+Create a four-panel plot for the WSF-uniform baseline:
 
 ```bash
-python 08_compare_baselines.py \
+mamba run -n diss python scripts/05_plot_four_panel.py \
+  --ghsl ~/data/GHSL_BUILD/cropped_ghsl.tif \
+  --wsf ~/data/WSF_Data/cropped_wsf.tif \
+  --baseline ~/data/outputs/wsf_uniform_baseline.tif \
+  --fallback ~/data/outputs/wsf_uniform_baseline_fallback_cells.tif \
+  --output ~/data/outputs/wsf_uniform_four_panel.png \
+  --agg-factor 10 \
+  --title "WSF-uniform baseline"
+```
+
+Compare all baselines against the external GHSL 10 m reference visually:
+
+```bash
+mamba run -n diss python scripts/08_compare_baselines.py \
   --baseline0 ~/data/outputs/wsf_uniform_baseline.tif \
   --baseline1 ~/data/outputs/embed_only_norm.tif \
   --baseline2 ~/data/outputs/embed_wsf_norm.tif \
   --ghsl10m ~/data/GHSL_BUILD/cropped_ghsl_raw_10m.tif \
   --output ~/data/outputs/baseline_comparison.png \
   --agg-factor 10 \
-  --title "Baseline comparison with GHSL 10 m reference" \
+  --title "Baseline comparison with external GHSL 10 m reference" \
   --ghsl ~/data/GHSL_BUILD/cropped_ghsl.tif \
   --wsf ~/data/WSF_Data/cropped_wsf.tif \
   --context-output ~/data/outputs/baseline_context.png
 ```
+
+## Quantitative Evaluation
+
+Run categorical evaluation against ESA WorldCover 2020:
+
+```bash
+mamba run -n diss python scripts/09_evaluate_against_esa_worldcover.py \
+  --predictions ~/data/outputs/wsf_uniform_baseline.tif \
+                ~/data/outputs/embed_only_norm.tif \
+                ~/data/outputs/embed_wsf_norm.tif \
+  --names wsf_uniform embed_only embed_wsf \
+  --esa-worldcover ~/data/ESA_cover_2020/cropped_esa_worldcover_2020.tif \
+  --wsf ~/data/WSF_Data/cropped_wsf.tif \
+  --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
+  --built-class 50 \
+  --output-csv ~/data/outputs/evaluation_esa_metrics.csv \
+  --output-json ~/data/outputs/evaluation_esa_metrics.json \
+  --output-fig ~/data/outputs/evaluation_esa_summary.png \
+  --output-map-dir ~/data/outputs/evaluation_esa_maps
+```
+
+ESA WorldCover is used as an out-of-pipeline categorical land-cover proxy, not
+as continuous built-up-surface ground truth. Because ESA WorldCover provides
+class labels rather than built-surface area, the evaluation reports categorical
+agreement, mass concentration within ESA built-up cells, top-k overlap, hard
+non-built allocation flags, and class-conditioned diagnostics. These metrics
+should be interpreted as spatial plausibility diagnostics rather than same-unit
+error estimates.
+
+The ESA evaluator also reports absolute predicted mass in hard non-built
+classes, class-specific leakage into water, wetland, mangroves, bare/sparse
+vegetation, cropland, and grassland, top-k lift over ESA built-up prevalence,
+and top-k predicted-mass overlap with ESA built-up. If `--output-map-dir` is
+provided, it writes per-model rasters showing predicted mass placed in hard
+non-built classes and in water/wetland/mangrove classes.
+
+For top-k diagnostics, `esa_built_prevalence` gives the background share of
+valid pixels classified as ESA built-up, while `topk_esa_built_lift` reports
+`P(ESA built-up | top-k predicted) / P(ESA built-up)`. Leakage by land-cover
+class is available in the `hard_nonbuilt_by_class` metric group.
+
+Run the GHSL 10 m proxy evaluator for optional same-units comparison. This
+compares 2019 downscaled predictions to the separate GHSL 2018 10 m product, so
+report the results as proxy validation rather than same-year ground truth:
+
+```bash
+mamba run -n diss python scripts/12_evaluate_against_ghsl10m_proxy.py \
+  --predictions ~/data/outputs/wsf_uniform_baseline.tif \
+                ~/data/outputs/embed_only_norm.tif \
+                ~/data/outputs/embed_wsf_norm.tif \
+  --names wsf_uniform embed_only embed_wsf \
+  --reference ~/data/GHSL_BUILD/cropped_ghsl_raw_10m.tif \
+  --wsf ~/data/WSF_Data/cropped_wsf.tif \
+  --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
+  --prediction-year 2019 \
+  --reference-year 2018 \
+  --output-csv ~/data/outputs/evaluation_ghsl10m_proxy_metrics.csv \
+  --output-json ~/data/outputs/evaluation_ghsl10m_proxy_metrics.json \
+  --output-fig ~/data/outputs/evaluation_ghsl10m_proxy_summary.png
+```
+
+The GHSL 10 m proxy evaluator reports MAE, RMSE, MAPE, pseudo-R2
+(`1 - SSE/SST`), mass ratio, bias, correlations, top-k overlap, and optional
+WSF diagnostics across native and aggregated scales. MAPE excludes reference
+cells at or below `--mape-epsilon` and reports the number of excluded cells. The
+older `scripts/09_evaluate_against_ghsl10m.py` remains available for reproducing
+earlier outputs.
+
+### Poster Validation Figures
+
+The poster validation script creates separate figure files for each validation
+source. It does not create a composite panel. This is intentional so each figure
+can be independently resized and arranged in the poster layout.
+
+```bash
+mamba run -n diss python scripts/13_make_poster_validation_figures.py \
+  --ghsl-csv ~/data/outputs/evaluation_ghsl10m_proxy_metrics.csv \
+  --viirs-csv ~/data/outputs/evaluation_viirs_metrics.csv \
+  --gaia-csv ~/data/outputs/evaluation_gaia_metrics.csv \
+  --esa-csv ~/data/outputs/evaluation_esa_metrics.csv \
+  --output-dir ~/data/outputs/poster_validation \
+  --models wsf_uniform embed_only embed_wsf \
+  --model-labels "WSF uniform" "Embedding only" "Embedding + WSF" \
+  --include-esa-leakage
+```
+
+The minimal validation set uses one main indicator per external reference:
+
+| Source | Indicator | Interpretation |
+| --- | --- | --- |
+| GHSL 10 m proxy | Spearman rank agreement by aggregation scale | Whether predicted high/low built-up areas agree with the external high-resolution proxy |
+| VIIRS | log1p correlation with nighttime lights | Whether predicted built-up intensity is associated with nighttime-light intensity |
+| GAIA | prevalence-matched IoU/F1 | Binary agreement with impervious extent after matching predicted prevalence to GAIA prevalence |
+| ESA WorldCover | top-k overlap with ESA built-up class | Whether the highest predicted built-up cells fall in categorical built-up land cover |
+
+`log1p()` is useful for Pearson correlation with skewed continuous variables.
+Spearman correlation is rank-based and is invariant to monotonic transformations
+such as `log1p()` for non-negative values. Therefore, `spearman_log1p` is
+retained only for compatibility with the VIIRS evaluator output and should be
+interpreted as rank agreement.
+
+GHSL 10 m is treated as an external high-resolution proxy, not exact ground
+truth. VIIRS is a continuous nighttime-light proxy, GAIA is a binary
+impervious-surface reference, and ESA WorldCover is a categorical land-cover
+plausibility check.
+
+#### Visualization Scaling For Poster Figures
+
+Some poster figures use tighter y-axis ranges rather than full `0-1` scaling
+when the compared values are all very high and clustered closely together. This
+is done to improve readability of small but meaningful differences between
+models. Numeric value labels are printed above bars to preserve
+interpretability.
+
+For VIIRS correlation, the poster figure uses a positive-only y-axis because all
+observed correlation values are positive. A symmetric `-1` to `1` correlation
+axis is not used in the poster view because it wastes space and makes
+differences harder to see.
+
+The GHSL rank-agreement figure is kept as a line plot across aggregation
+scales.
+
+#### ESA Leakage-By-Class Figure
+
+The optional ESA leakage figure reports where predicted built-up mass falls
+outside the ESA WorldCover built-up class. It separates leakage into hard
+non-built classes, where built-up predictions are usually less defensible, and
+softer non-built classes, where class boundary ambiguity is more plausible.
+
+Hard non-built classes include water, wetland, mangroves, and snow/ice. Softer
+non-built classes include grassland, cropland, and bare/sparse vegetation. The
+default poster figure uses absolute predicted mass by ESA class, while
+`--esa-leakage-metric pred_mass_share` can be used to compare proportional
+leakage across models.
+
+Run the VIIRS validation line:
+
+```bash
+mamba run -n diss python scripts/10_evaluate_against_viirs.py \
+  --predictions ~/data/outputs/wsf_uniform_baseline.tif \
+                ~/data/outputs/embed_only_norm.tif \
+                ~/data/outputs/embed_wsf_norm.tif \
+  --names wsf_uniform embed_only embed_wsf \
+  --viirs ~/data/VIIRS/cropped_viirs_fvf_2019_100m.tif \
+  --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
+  --output-csv ~/data/outputs/evaluation_viirs_metrics.csv \
+  --output-fig ~/data/outputs/evaluation_viirs_summary.png
+```
+
+The VIIRS evaluator uses the VIIRS raster as the target grid. It aggregates each
+fine prediction raster up to the VIIRS 100 m grid using sum resampling, then
+reports Pearson and Spearman correlation on `log1p` values, top-k overlap with
+the highest-VIIRS cells, and decile curves showing mean/median predicted
+built-up surface across VIIRS brightness deciles.
+
+Run the GAIA validation line:
+
+```bash
+mamba run -n diss python scripts/11_evaluate_against_gaia.py \
+  --predictions ~/data/outputs/wsf_uniform_baseline.tif \
+                ~/data/outputs/embed_only_norm.tif \
+                ~/data/outputs/embed_wsf_norm.tif \
+  --names wsf_uniform embed_only embed_wsf \
+  --gaia-impervious ~/data/GAIA/cropped_gaia_impervious_2019.tif \
+  --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
+  --output-csv ~/data/outputs/evaluation_gaia_metrics.csv \
+  --output-fig ~/data/outputs/evaluation_gaia_summary.png \
+  --output-map-dir ~/data/outputs/evaluation_gaia_maps
+```
+
+The GAIA evaluator uses the prepared GAIA 2019 binary impervious raster as the
+target grid. It aggregates each fine prediction raster to the GAIA 30 m grid
+using sum resampling, then reports predicted mass inside/outside GAIA
+impervious cells, GAIA impervious prevalence, top-k overlap/lift, and
+prevalence-matched precision/recall/F1/IoU. If `--output-map-dir` is provided,
+it writes per-model rasters showing predicted mass outside GAIA impervious
+cells.
