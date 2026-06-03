@@ -22,6 +22,9 @@ but it is no longer the primary validation target.
 - **ESA WorldCover 2020**: the default final validation layer. Class `50` is
   treated as built-up; evaluation is categorical/binary agreement and spatial
   plausibility assessment, not continuous built-surface error validation.
+- **WorldPop VIIRS FVF 2019**: a continuous 100 m nighttime-lights covariate
+  used as a second validation line. Predictions are aggregated to the VIIRS
+  grid before correlation and top-k overlap are computed.
 - **GHSL 10 m reference**: cropped separately for optional fine-scale comparison.
   In this project this reference is the separate GHSL 2018 10 m product/pipeline,
   so report it as a GHSL-family proxy rather than literal same-year ground truth.
@@ -86,6 +89,20 @@ This saves the raw 2020 WorldCover tile under:
 ~/data/ESA_cover_2020/
 ```
 
+### WorldPop VIIRS FVF 2019
+
+Download the Ghana VIIRS FVF 2019 100 m covariate:
+
+```bash
+bash scripts/00_get_VIIRS.sh
+```
+
+This saves the raw raster to:
+
+```text
+~/data/tmp/gha_viirs_fvf_2019_100m_v1.tif
+```
+
 ### GHSL 2019 Coarse Training Layer
 
 Build the trend-derived 2019 GHSL BUILT-S layer:
@@ -115,6 +132,7 @@ Main outputs:
 - `~/data/WSF_Data/cropped_wsf_features.tif`
 - `~/data/ESA_cover_2020/cropped_esa_worldcover_2020.tif`
 - `~/data/ESA_cover_2020/cropped_esa_built_2020.tif`
+- `~/data/VIIRS/cropped_viirs_fvf_2019_100m.tif`
 - `~/data/GHSL_BUILD/cropped_ghsl.tif`
 - `~/data/GHSL_BUILD/cropped_ghsl_raw_10m.tif`
 
@@ -305,3 +323,22 @@ mamba run -n diss python scripts/09_evaluate_against_ghsl10m.py \
   --output-json ~/data/outputs/evaluation_metrics.json \
   --output-fig ~/data/outputs/evaluation_summary.png
 ```
+
+Run the VIIRS validation line:
+
+```bash
+mamba run -n diss python scripts/10_evaluate_against_viirs.py \
+  --predictions ~/data/outputs/wsf_uniform_baseline.tif \
+                ~/data/outputs/embed_only_norm.tif \
+                ~/data/outputs/embed_wsf_norm.tif \
+  --names wsf_uniform embed_only embed_wsf \
+  --viirs ~/data/VIIRS/cropped_viirs_fvf_2019_100m.tif \
+  --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
+  --output-csv ~/data/outputs/evaluation_viirs_metrics.csv \
+  --output-fig ~/data/outputs/evaluation_viirs_summary.png
+```
+
+The VIIRS evaluator uses the VIIRS raster as the target grid. It aggregates each
+fine prediction raster up to the VIIRS 100 m grid using sum resampling, then
+reports Pearson correlation on `log1p` values and top-k overlap with the
+highest-VIIRS cells.

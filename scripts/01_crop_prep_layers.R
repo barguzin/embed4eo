@@ -28,6 +28,10 @@ plot(wsf_data2)
 esa_worldcover <- rast('~/data/ESA_cover_2020/ESA_WorldCover_10m_2020_v100_N03W003_Map.tif')
 print(crs(esa_worldcover))
 
+### read VIIRS WorldPop covariate data
+viirs_fvf <- rast('~/data/tmp/gha_viirs_fvf_2019_100m_v1.tif')
+print(crs(viirs_fvf))
+
 # read embeddings data 
 embed_tile <- rast('~/data/aef_accra_2019/x7dai37vmlntho3ws-0000008192-0000008192.tiff')
 embed_tile2 <- rast('~/data/aef_accra_2019/xkowq9ox8kqkx6nyq-0000008192-0000000000.tiff')
@@ -80,6 +84,30 @@ writeRaster(
 )
 
 message('Finished Processing ESA WorldCover validation layers')
+
+# ---------------------------------------------------------------------------
+# VIIRS validation layer
+# Continuous 100 m WorldPop VIIRS FVF covariate. Crop to the AOI and project to
+# the embedding CRS. The evaluator aggregates model predictions to this VIIRS
+# grid before computing validation metrics.
+# ---------------------------------------------------------------------------
+
+accra_bbox_viirs <- project(accra_bbox, crs(viirs_fvf))
+viirs_cropped <- crop(viirs_fvf, accra_bbox_viirs)
+viirs_aligned <- project(viirs_cropped, crs(embed_template), method = "bilinear")
+names(viirs_aligned) <- "viirs_fvf_2019_100m"
+
+plot(viirs_aligned)
+
+dir.create('~/data/VIIRS', recursive = TRUE, showWarnings = FALSE)
+writeRaster(
+  viirs_aligned,
+  filename = '~/data/VIIRS/cropped_viirs_fvf_2019_100m.tif',
+  overwrite = TRUE,
+  wopt = list(datatype = "FLT4S")
+)
+
+message('Finished Processing VIIRS validation layer')
 
 # re-project WSF to google reference CRS
 # IMPORTANT: use nearest-neighbor for binary raster
