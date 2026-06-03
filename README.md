@@ -330,10 +330,12 @@ valid pixels classified as ESA built-up, while `topk_esa_built_lift` reports
 `P(ESA built-up | top-k predicted) / P(ESA built-up)`. Leakage by land-cover
 class is available in the `hard_nonbuilt_by_class` metric group.
 
-The legacy GHSL 10 m evaluator remains available for optional proxy comparison:
+Run the GHSL 10 m proxy evaluator for optional same-units comparison. This
+compares 2019 downscaled predictions to the separate GHSL 2018 10 m product, so
+report the results as proxy validation rather than same-year ground truth:
 
 ```bash
-mamba run -n diss python scripts/09_evaluate_against_ghsl10m.py \
+mamba run -n diss python scripts/12_evaluate_against_ghsl10m_proxy.py \
   --predictions ~/data/outputs/wsf_uniform_baseline.tif \
                 ~/data/outputs/embed_only_norm.tif \
                 ~/data/outputs/embed_wsf_norm.tif \
@@ -341,10 +343,56 @@ mamba run -n diss python scripts/09_evaluate_against_ghsl10m.py \
   --reference ~/data/GHSL_BUILD/cropped_ghsl_raw_10m.tif \
   --wsf ~/data/WSF_Data/cropped_wsf.tif \
   --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
-  --output-csv ~/data/outputs/evaluation_metrics.csv \
-  --output-json ~/data/outputs/evaluation_metrics.json \
-  --output-fig ~/data/outputs/evaluation_summary.png
+  --prediction-year 2019 \
+  --reference-year 2018 \
+  --output-csv ~/data/outputs/evaluation_ghsl10m_proxy_metrics.csv \
+  --output-json ~/data/outputs/evaluation_ghsl10m_proxy_metrics.json \
+  --output-fig ~/data/outputs/evaluation_ghsl10m_proxy_summary.png
 ```
+
+The GHSL 10 m proxy evaluator reports MAE, RMSE, MAPE, pseudo-R2
+(`1 - SSE/SST`), mass ratio, bias, correlations, top-k overlap, and optional
+WSF diagnostics across native and aggregated scales. MAPE excludes reference
+cells at or below `--mape-epsilon` and reports the number of excluded cells. The
+older `scripts/09_evaluate_against_ghsl10m.py` remains available for reproducing
+earlier outputs.
+
+### Poster Validation Figures
+
+The poster validation script creates separate figure files for each validation
+source. It does not create a composite panel. This is intentional so each figure
+can be independently resized and arranged in the poster layout.
+
+```bash
+mamba run -n diss python scripts/13_make_poster_validation_figures.py \
+  --ghsl-csv ~/data/outputs/evaluation_ghsl10m_proxy_metrics.csv \
+  --viirs-csv ~/data/outputs/evaluation_viirs_metrics.csv \
+  --gaia-csv ~/data/outputs/evaluation_gaia_metrics.csv \
+  --esa-csv ~/data/outputs/evaluation_esa_metrics.csv \
+  --output-dir ~/data/outputs/poster_validation \
+  --models wsf_uniform embed_only embed_wsf \
+  --model-labels "WSF uniform" "Embedding only" "Embedding + WSF"
+```
+
+The minimal validation set uses one main indicator per external reference:
+
+| Source | Indicator | Interpretation |
+| --- | --- | --- |
+| GHSL 10 m proxy | Spearman rank agreement by aggregation scale | Whether predicted high/low built-up areas agree with the external high-resolution proxy |
+| VIIRS | log1p correlation with nighttime lights | Whether predicted built-up intensity is associated with nighttime-light intensity |
+| GAIA | prevalence-matched IoU/F1 | Binary agreement with impervious extent after matching predicted prevalence to GAIA prevalence |
+| ESA WorldCover | top-k overlap with ESA built-up class | Whether the highest predicted built-up cells fall in categorical built-up land cover |
+
+`log1p()` is useful for Pearson correlation with skewed continuous variables.
+Spearman correlation is rank-based and is invariant to monotonic transformations
+such as `log1p()` for non-negative values. Therefore, `spearman_log1p` is
+retained only for compatibility with the VIIRS evaluator output and should be
+interpreted as rank agreement.
+
+GHSL 10 m is treated as an external high-resolution proxy, not exact ground
+truth. VIIRS is a continuous nighttime-light proxy, GAIA is a binary
+impervious-surface reference, and ESA WorldCover is a categorical land-cover
+plausibility check.
 
 Run the VIIRS validation line:
 
