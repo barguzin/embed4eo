@@ -32,6 +32,16 @@ print(crs(esa_worldcover))
 viirs_fvf <- rast('~/data/tmp/gha_viirs_fvf_2019_100m_v1.tif')
 print(crs(viirs_fvf))
 
+### read GAIA impervious-area tiles
+gaia_files <- c(
+  '~/data/tmp/GAIA_1985_2022_-5_5.tif',
+  '~/data/tmp/GAIA_1985_2022_-5_10.tif',
+  '~/data/tmp/GAIA_1985_2022_0_10.tif'
+)
+gaia_tiles <- sprc(lapply(gaia_files, rast))
+gaia_mosaic <- mosaic(gaia_tiles, fun = 'first')
+print(crs(gaia_mosaic))
+
 # read embeddings data 
 embed_tile <- rast('~/data/aef_accra_2019/x7dai37vmlntho3ws-0000008192-0000008192.tiff')
 embed_tile2 <- rast('~/data/aef_accra_2019/xkowq9ox8kqkx6nyq-0000008192-0000000000.tiff')
@@ -108,6 +118,37 @@ writeRaster(
 )
 
 message('Finished Processing VIIRS validation layer')
+
+# ---------------------------------------------------------------------------
+# GAIA validation layer
+# GAIA is a 30 m categorical impervious-area product where 0 is non-urban and
+# values 2:38 encode the first year a pixel became urban. For 2019 validation,
+# values >= 4 are impervious by 2019; values 0, 2, and 3 are non-impervious by
+# 2019. The evaluator aggregates model predictions to this GAIA grid.
+# ---------------------------------------------------------------------------
+
+accra_bbox_gaia <- project(accra_bbox, crs(gaia_mosaic))
+gaia_cropped <- crop(gaia_mosaic, accra_bbox_gaia)
+gaia_impervious_2019 <- ifel(
+  is.na(gaia_cropped) | gaia_cropped == -128,
+  NA,
+  ifel(gaia_cropped >= 4, 1, 0)
+)
+
+gaia_aligned <- project(gaia_impervious_2019, crs(embed_template), method = "near")
+names(gaia_aligned) <- "gaia_impervious_2019"
+
+plot(gaia_aligned)
+
+dir.create('~/data/GAIA', recursive = TRUE, showWarnings = FALSE)
+writeRaster(
+  gaia_aligned,
+  filename = '~/data/GAIA/cropped_gaia_impervious_2019.tif',
+  overwrite = TRUE,
+  wopt = list(datatype = "INT1U")
+)
+
+message('Finished Processing GAIA validation layer')
 
 # re-project WSF to google reference CRS
 # IMPORTANT: use nearest-neighbor for binary raster

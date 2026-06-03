@@ -25,6 +25,9 @@ but it is no longer the primary validation target.
 - **WorldPop VIIRS FVF 2019**: a continuous 100 m nighttime-lights covariate
   used as a second validation line. Predictions are aggregated to the VIIRS
   grid before correlation and top-k overlap are computed.
+- **GAIA 2019 impervious extent**: a 30 m binary impervious-area validation
+  layer derived from the GAIA 1985-2022 encoded tiles. Predictions are
+  aggregated to the GAIA grid for binary/categorical diagnostics.
 - **GHSL 10 m reference**: cropped separately for optional fine-scale comparison.
   In this project this reference is the separate GHSL 2018 10 m product/pipeline,
   so report it as a GHSL-family proxy rather than literal same-year ground truth.
@@ -52,7 +55,7 @@ plain `python`.
    - embeddings-only neural allocator.
    - embeddings + WSF neural allocator.
 5. Create visual diagnostics.
-6. Evaluate predictions quantitatively against ESA WorldCover 2020.
+6. Evaluate predictions quantitatively against ESA WorldCover, VIIRS, and GAIA.
 
 ## Data Download And Preprocessing
 
@@ -103,6 +106,24 @@ This saves the raw raster to:
 ~/data/tmp/gha_viirs_fvf_2019_100m_v1.tif
 ```
 
+### GAIA 2019 Impervious Extent
+
+Place the GAIA tiles covering Accra in:
+
+```text
+~/data/tmp/
+```
+
+The preprocessing script currently expects:
+
+- `~/data/tmp/GAIA_1985_2022_-5_5.tif`
+- `~/data/tmp/GAIA_1985_2022_-5_10.tif`
+- `~/data/tmp/GAIA_1985_2022_0_10.tif`
+
+GAIA stores first-impervious year as encoded values. For the 2019 validation
+layer, values `>= 4` are treated as impervious by 2019, while `0`, `2`, and `3`
+are treated as not impervious by 2019.
+
 ### GHSL 2019 Coarse Training Layer
 
 Build the trend-derived 2019 GHSL BUILT-S layer:
@@ -133,6 +154,7 @@ Main outputs:
 - `~/data/ESA_cover_2020/cropped_esa_worldcover_2020.tif`
 - `~/data/ESA_cover_2020/cropped_esa_built_2020.tif`
 - `~/data/VIIRS/cropped_viirs_fvf_2019_100m.tif`
+- `~/data/GAIA/cropped_gaia_impervious_2019.tif`
 - `~/data/GHSL_BUILD/cropped_ghsl.tif`
 - `~/data/GHSL_BUILD/cropped_ghsl_raw_10m.tif`
 
@@ -343,3 +365,26 @@ fine prediction raster up to the VIIRS 100 m grid using sum resampling, then
 reports Pearson and Spearman correlation on `log1p` values, top-k overlap with
 the highest-VIIRS cells, and decile curves showing mean/median predicted
 built-up surface across VIIRS brightness deciles.
+
+Run the GAIA validation line:
+
+```bash
+mamba run -n diss python scripts/11_evaluate_against_gaia.py \
+  --predictions ~/data/outputs/wsf_uniform_baseline.tif \
+                ~/data/outputs/embed_only_norm.tif \
+                ~/data/outputs/embed_wsf_norm.tif \
+  --names wsf_uniform embed_only embed_wsf \
+  --gaia-impervious ~/data/GAIA/cropped_gaia_impervious_2019.tif \
+  --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
+  --output-csv ~/data/outputs/evaluation_gaia_metrics.csv \
+  --output-fig ~/data/outputs/evaluation_gaia_summary.png \
+  --output-map-dir ~/data/outputs/evaluation_gaia_maps
+```
+
+The GAIA evaluator uses the prepared GAIA 2019 binary impervious raster as the
+target grid. It aggregates each fine prediction raster to the GAIA 30 m grid
+using sum resampling, then reports predicted mass inside/outside GAIA
+impervious cells, GAIA impervious prevalence, top-k overlap/lift, and
+prevalence-matched precision/recall/F1/IoU. If `--output-map-dir` is provided,
+it writes per-model rasters showing predicted mass outside GAIA impervious
+cells.
