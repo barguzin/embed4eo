@@ -7,8 +7,9 @@ VIIRS is continuous but not in the same units as predicted built-up surface.
 This evaluator therefore avoids same-unit error metrics. It aggregates each
 prediction raster to the VIIRS 100 m grid using sum resampling, then reports:
 
-- Pearson correlation between log1p(predicted built-up mass) and log1p(VIIRS)
+- Pearson and Spearman correlation between log1p(predicted built-up mass) and log1p(VIIRS)
 - top-k overlap between highest-predicted cells and highest-VIIRS cells
+- decile curves: mean/median predicted built-up surface by VIIRS brightness decile
 
 Example
 -------
@@ -134,6 +135,27 @@ def pearson(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.corrcoef(x, y)[0, 1])
 
 
+def average_ranks(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(values, kind="mergesort")
+    ranks = np.empty(values.size, dtype=np.float64)
+    sorted_values = values[order]
+
+    start = 0
+    while start < values.size:
+        stop = start + 1
+        while stop < values.size and sorted_values[stop] == sorted_values[start]:
+            stop += 1
+        ranks[order[start:stop]] = 0.5 * (start + 1 + stop)
+        start = stop
+    return ranks
+
+
+def spearman(x: np.ndarray, y: np.ndarray) -> float:
+    if x.size < 2:
+        return np.nan
+    return pearson(average_ranks(x), average_ranks(y))
+
+
 def top_fraction_mask(values: np.ndarray, fraction: float) -> Tuple[np.ndarray, float]:
     if not 0 < fraction < 1:
         raise ValueError("--topk-fracs values must be in (0, 1)")
@@ -151,6 +173,7 @@ def add_row(rows: List[dict], model: str, metric_group: str, metric: str, value:
         "metric": metric,
         "value": value,
         "topk_frac": None,
+        "viirs_decile": None,
     }
     row.update(extra)
     rows.append(row)
@@ -160,7 +183,7 @@ def compute_metrics(
     pred_100m: np.ndarray,
     viirs: np.ndarray,
     topk_fracs: Iterable[float],
-) -> Tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
+) -> Tuple[Dict[str, float], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
     valid = np.isfinite(pred_100m) & np.isfinite(viirs) & (pred_100m >= 0) & (viirs >= 0)
     pred = pred_100m[valid].astype(np.float64, copy=False)
     viirs_valid = viirs[valid].astype(np.float64, copy=False)
@@ -176,6 +199,7 @@ def compute_metrics(
         "pred_mass_total_100m": total_pred_mass,
         "viirs_total": total_viirs,
         "pearson_log1p": pearson(pred_log, viirs_log),
+        "spearman_log1p": spearman(pred_log, viirs_log),
         "pred_log1p_mean": float(np.mean(pred_log)) if pred.size else np.nan,
         "viirs_log1p_mean": float(np.mean(viirs_log)) if viirs_valid.size else np.nan,
     }
@@ -205,11 +229,35 @@ def compute_metrics(
             "topk_overlap_viirs_share": safe_div(overlap_viirs_total, viirs_top_total),
         }
 
-    return base_metrics, topk
+    deciles: Dict[str, Dict[str, float]] = {}
+    if pred.size:
+        decile_edges = np.quantile(viirs_valid, np.linspace(0, 1, 11))
+        for decile in range(1, 11):
+            lo = decile_edges[decile - 1]
+            hi = decile_edges[decile]
+            if decile == 1:
+                mask = (viirs_valid >= lo) & (viirs_valid <= hi)
+            else:
+                mask = (viirs_valid > lo) & (viirs_valid <= hi)
+            vals = pred[mask]
+            viirs_vals = viirs_valid[mask]
+            deciles[str(decile)] = {
+                "viirs_decile": float(decile),
+                "cell_count": float(vals.size),
+                "viirs_min": float(lo),
+                "viirs_max": float(hi),
+                "viirs_mean": float(np.mean(viirs_vals)) if viirs_vals.size else np.nan,
+                "pred_mean": float(np.mean(vals)) if vals.size else np.nan,
+                "pred_median": float(np.median(vals)) if vals.size else np.nan,
+                "pred_p25": float(np.percentile(vals, 25)) if vals.size else np.nan,
+                "pred_p75": float(np.percentile(vals, 75)) if vals.size else np.nan,
+            }
+
+    return base_metrics, topk, deciles
 
 
 def write_csv(rows: List[dict], out_path: Path) -> None:
-    fieldnames = ["model", "metric_group", "metric", "value", "topk_frac"]
+    fieldnames = ["model", "metric_group", "metric", "value", "topk_frac", "viirs_decile"]
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -217,11 +265,20 @@ def write_csv(rows: List[dict], out_path: Path) -> None:
         writer.writerows(rows)
 
 
-def value_from_rows(rows: List[dict], model: str, metric_group: str, metric: str, topk_frac=None) -> Optional[float]:
+def value_from_rows(
+    rows: List[dict],
+    model: str,
+    metric_group: str,
+    metric: str,
+    topk_frac=None,
+    viirs_decile=None,
+) -> Optional[float]:
     for row in rows:
         if row["model"] != model or row["metric_group"] != metric_group or row["metric"] != metric:
             continue
         if topk_frac is not None and row.get("topk_frac") != topk_frac:
+            continue
+        if viirs_decile is not None and row.get("viirs_decile") != viirs_decile:
             continue
         return row["value"]
     return None
@@ -230,17 +287,26 @@ def value_from_rows(rows: List[dict], model: str, metric_group: str, metric: str
 def write_figure(rows: List[dict], models: List[str], out_path: Path) -> None:
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
 
-    correlations = [
+    x_corr = np.arange(len(models), dtype=float)
+    pearson_vals = [
         value_from_rows(rows, model, "correlation", "pearson_log1p") or 0.0
         for model in models
     ]
-    axes[0].bar(models, correlations)
-    axes[0].set_title("VIIRS agreement: Pearson on log1p values")
-    axes[0].set_ylabel("Pearson correlation")
+    spearman_vals = [
+        value_from_rows(rows, model, "correlation", "spearman_log1p") or 0.0
+        for model in models
+    ]
+    axes[0].bar(x_corr - 0.18, pearson_vals, width=0.36, label="Pearson")
+    axes[0].bar(x_corr + 0.18, spearman_vals, width=0.36, label="Spearman")
+    axes[0].set_title("VIIRS agreement on log1p values")
+    axes[0].set_ylabel("Correlation")
     axes[0].set_ylim(-1, 1)
+    axes[0].set_xticks(x_corr)
+    axes[0].set_xticklabels(models)
     axes[0].tick_params(axis="x", rotation=25)
+    axes[0].legend()
 
     top_rows = [
         r for r in rows
@@ -260,6 +326,24 @@ def write_figure(rows: List[dict], models: List[str], out_path: Path) -> None:
     axes[1].set_xticks(x + width * (len(models) - 1) / 2)
     axes[1].set_xticklabels([f"{int(f * 100)}%" for f in fracs])
     axes[1].legend()
+
+    deciles = list(range(1, 11))
+    for model in models:
+        mean_vals = [
+            value_from_rows(rows, model, "viirs_decile", "pred_mean", viirs_decile=float(d))
+            for d in deciles
+        ]
+        median_vals = [
+            value_from_rows(rows, model, "viirs_decile", "pred_median", viirs_decile=float(d))
+            for d in deciles
+        ]
+        axes[2].plot(deciles, mean_vals, marker="o", label=f"{model} mean")
+        axes[2].plot(deciles, median_vals, linestyle="--", marker="x", label=f"{model} median")
+    axes[2].set_title("Predicted built-up by VIIRS brightness decile")
+    axes[2].set_xlabel("VIIRS decile, low to high")
+    axes[2].set_ylabel("Aggregated predicted built-up")
+    axes[2].set_xticks(deciles)
+    axes[2].legend(fontsize=8)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=180, bbox_inches="tight")
@@ -284,14 +368,18 @@ def main() -> None:
     for model, pred_path in zip(names, pred_paths):
         print(f"[INFO] Evaluating {model}")
         pred_100m = aggregate_prediction_to_viirs_grid(pred_path, viirs_profile, cell_ids_path)
-        base_metrics, topk = compute_metrics(pred_100m, viirs, args.topk_fracs)
+        base_metrics, topk, deciles = compute_metrics(pred_100m, viirs, args.topk_fracs)
         for metric, value in base_metrics.items():
-            group = "correlation" if metric == "pearson_log1p" else "summary"
+            group = "correlation" if metric in {"pearson_log1p", "spearman_log1p"} else "summary"
             add_row(rows, model, group, metric, value)
         for frac_key, metrics in topk.items():
             frac = float(frac_key)
             for metric, value in metrics.items():
                 add_row(rows, model, "topk", metric, value, topk_frac=frac)
+        for decile_key, metrics in deciles.items():
+            decile = float(decile_key)
+            for metric, value in metrics.items():
+                add_row(rows, model, "viirs_decile", metric, value, viirs_decile=decile)
 
     out_csv = Path(args.output_csv).expanduser().resolve()
     write_csv(rows, out_csv)

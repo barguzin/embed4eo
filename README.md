@@ -340,5 +340,6 @@ mamba run -n diss python scripts/10_evaluate_against_viirs.py \
 
 The VIIRS evaluator uses the VIIRS raster as the target grid. It aggregates each
 fine prediction raster up to the VIIRS 100 m grid using sum resampling, then
-reports Pearson correlation on `log1p` values and top-k overlap with the
-highest-VIIRS cells.
+reports Pearson and Spearman correlation on `log1p` values, top-k overlap with
+the highest-VIIRS cells, and decile curves showing mean/median predicted
+built-up surface across VIIRS brightness deciles.
