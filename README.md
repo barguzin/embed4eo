@@ -371,7 +371,8 @@ mamba run -n diss python scripts/13_make_poster_validation_figures.py \
   --esa-csv ~/data/outputs/evaluation_esa_metrics.csv \
   --output-dir ~/data/outputs/poster_validation \
   --models wsf_uniform embed_only embed_wsf \
-  --model-labels "WSF uniform" "Embedding only" "Embedding + WSF"
+  --model-labels "WSF uniform" "Embedding only" "Embedding + WSF" \
+  --include-esa-leakage
 ```
 
 The minimal validation set uses one main indicator per external reference:
@@ -393,6 +394,35 @@ GHSL 10 m is treated as an external high-resolution proxy, not exact ground
 truth. VIIRS is a continuous nighttime-light proxy, GAIA is a binary
 impervious-surface reference, and ESA WorldCover is a categorical land-cover
 plausibility check.
+
+#### Visualization Scaling For Poster Figures
+
+Some poster figures use tighter y-axis ranges rather than full `0-1` scaling
+when the compared values are all very high and clustered closely together. This
+is done to improve readability of small but meaningful differences between
+models. Numeric value labels are printed above bars to preserve
+interpretability.
+
+For VIIRS correlation, the poster figure uses a positive-only y-axis because all
+observed correlation values are positive. A symmetric `-1` to `1` correlation
+axis is not used in the poster view because it wastes space and makes
+differences harder to see.
+
+The GHSL rank-agreement figure is kept as a line plot across aggregation
+scales.
+
+#### ESA Leakage-By-Class Figure
+
+The optional ESA leakage figure reports where predicted built-up mass falls
+outside the ESA WorldCover built-up class. It separates leakage into hard
+non-built classes, where built-up predictions are usually less defensible, and
+softer non-built classes, where class boundary ambiguity is more plausible.
+
+Hard non-built classes include water, wetland, mangroves, and snow/ice. Softer
+non-built classes include grassland, cropland, and bare/sparse vegetation. The
+default poster figure uses absolute predicted mass by ESA class, while
+`--esa-leakage-metric pred_mass_share` can be used to compare proportional
+leakage across models.
 
 Run the VIIRS validation line:
 
