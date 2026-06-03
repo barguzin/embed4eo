@@ -17,12 +17,15 @@ Small fully convolutional network with positive output (Softplus).
 
 Loss
 ----
-total_loss = coarse_loss + tv_weight * tv_loss + wsf_weight * outside_wsf_fraction
+The CNN predicts positive raw scores. Scores are differentiably normalized
+within each coarse cell, then multiplied by that cell's GHSL target. Training
+uses the resulting mass-preserving fine prediction:
+
+total_loss = tv_weight * tv_loss + wsf_weight * outside_wsf_fraction
 
 where:
-- coarse_loss compares aggregated fine predictions to coarse GHSL targets
-- tv_loss is total variation on the fine prediction
-- outside_wsf_fraction penalizes predicted mass outside WSF support
+- tv_loss is total variation on the normalized fine prediction
+- outside_wsf_fraction penalizes normalized predicted mass outside WSF support
 
 Outputs
 -------
@@ -67,7 +70,6 @@ import numpy as np
 import rasterio
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 def parse_args() -> argparse.Namespace:
@@ -246,6 +248,34 @@ def aggregate_to_cells(pred_flat_valid: torch.Tensor, compact_idx_valid: torch.T
     return coarse
 
 
+def normalize_scores_by_cell(
+    score: torch.Tensor,
+    valid_linear_idx: torch.Tensor,
+    compact_idx_valid: torch.Tensor,
+    coarse_targets: torch.Tensor,
+    n_cells: int,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """
+    Convert positive raw scores to mass-preserving fine predictions.
+
+    score shape: (1, 1, H, W)
+    valid_linear_idx: flattened pixel indices used for training/allocation
+    compact_idx_valid: compact coarse-cell index for each valid pixel
+    coarse_targets: target mass for each compact coarse-cell index
+    """
+    score_flat = score.reshape(-1)
+    valid_scores = score_flat.index_select(0, valid_linear_idx)
+    cell_sums = aggregate_to_cells(valid_scores, compact_idx_valid, n_cells)
+    target_valid = coarse_targets.index_select(0, compact_idx_valid)
+    denom_valid = cell_sums.index_select(0, compact_idx_valid) + eps
+    pred_valid = valid_scores / denom_valid * target_valid
+
+    pred_flat = torch.zeros_like(score_flat)
+    pred_flat.index_copy_(0, valid_linear_idx, pred_valid)
+    return pred_flat.reshape_as(score)
+
+
 def renormalize_by_cell(
     raw_pred: np.ndarray,
     cell_ids: np.ndarray,
@@ -280,7 +310,13 @@ def renormalize_by_cell(
     return out
 
 
-def compute_metrics(pred: np.ndarray, pred_norm: np.ndarray, cell_ids: np.ndarray, lookup: Dict[int, float]) -> Dict[str, float]:
+def compute_metrics(
+    pred: np.ndarray,
+    pred_norm: np.ndarray,
+    cell_ids: np.ndarray,
+    lookup: Dict[int, float],
+    valid_mask: np.ndarray,
+) -> Dict[str, float]:
     unique_ids = np.unique(cell_ids[cell_ids > 0])
     targets = []
     raw_sums = []
@@ -288,31 +324,39 @@ def compute_metrics(pred: np.ndarray, pred_norm: np.ndarray, cell_ids: np.ndarra
     for cid in unique_ids:
         if int(cid) not in lookup:
             continue
-        mask = cell_ids == cid
+        mask = (cell_ids == cid) & valid_mask
+        if not np.any(mask):
+            continue
         target = float(lookup[int(cid)])
         targets.append(target)
-        raw_sums.append(float(pred[mask].sum()))
-        norm_sums.append(float(pred_norm[mask].sum()))
+        raw_sums.append(float(np.nansum(pred[mask])))
+        norm_sums.append(float(np.nansum(pred_norm[mask])))
     t = np.array(targets, dtype=np.float64)
     r = np.array(raw_sums, dtype=np.float64)
     n = np.array(norm_sums, dtype=np.float64)
 
-    raw_mae = float(np.mean(np.abs(r - t)))
-    raw_rmse = float(np.sqrt(np.mean((r - t) ** 2)))
-    norm_mae = float(np.mean(np.abs(n - t)))
-    norm_rmse = float(np.sqrt(np.mean((n - t) ** 2)))
+    raw_mae = float(np.mean(np.abs(r - t))) if t.size else np.nan
+    raw_rmse = float(np.sqrt(np.mean((r - t) ** 2))) if t.size else np.nan
+    mass_errors = n - t
+    mass_mae = float(np.mean(np.abs(mass_errors))) if t.size else np.nan
+    mass_rmse = float(np.sqrt(np.mean(mass_errors**2))) if t.size else np.nan
+    mass_max_abs = float(np.max(np.abs(mass_errors))) if t.size else np.nan
     raw_total = float(r.sum())
     norm_total = float(n.sum())
     target_total = float(t.sum())
+    mass_total_error = float(norm_total - target_total)
 
     return {
-        "raw_coarse_mae": raw_mae,
-        "raw_coarse_rmse": raw_rmse,
-        "norm_coarse_mae": norm_mae,
-        "norm_coarse_rmse": norm_rmse,
+        "raw_score_coarse_mae": raw_mae,
+        "raw_score_coarse_rmse": raw_rmse,
+        "raw_score_total": raw_total,
         "target_total": target_total,
-        "raw_total": raw_total,
         "norm_total": norm_total,
+        "mass_preservation_mae": mass_mae,
+        "mass_preservation_rmse": mass_rmse,
+        "mass_preservation_max_abs_error": mass_max_abs,
+        "mass_preservation_total_error": mass_total_error,
+        "mass_preservation_cells_checked": int(t.size),
     }
 
 
@@ -342,15 +386,15 @@ def write_raster(out_path: Path, arr: np.ndarray, profile: dict) -> None:
 def plot_losses(history: List[dict], out_path: Path) -> None:
     epochs = [h["epoch"] for h in history]
     total = [h["loss"] for h in history]
-    coarse = [h["coarse_loss"] for h in history]
     tv = [h["tv_loss"] for h in history]
     wsf = [h["wsf_loss"] for h in history]
+    mass = [h["mass_preservation_rmse"] for h in history]
 
     plt.figure(figsize=(12, 7))
     plt.plot(epochs, total, label="total loss")
-    plt.plot(epochs, coarse, label="coarse loss")
     plt.plot(epochs, tv, label="TV loss")
     plt.plot(epochs, wsf, label="WSF loss")
+    plt.plot(epochs, mass, label="mass preservation RMSE")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.title("Embeddings + WSF baseline training")
@@ -392,17 +436,28 @@ def main() -> None:
     wsf_support = np.where(np.isfinite(wsf_bin) & (wsf_bin > 0), 1.0, 0.0).astype(np.float32)
     wsf_support[~valid_mask] = 0.0
 
-    valid_mask_flat, valid_cell_ids_flat, coarse_targets_np, cellid_to_compact = build_cell_mapping(cell_ids, lookup)
-    compact_idx_np = np.array([cellid_to_compact[int(cid)] for cid in valid_cell_ids_flat], dtype=np.int64)
+    cell_lookup_mask_flat, _, coarse_targets_np, cellid_to_compact = build_cell_mapping(cell_ids, lookup)
+    train_valid_flat = valid_mask.reshape(-1) & cell_lookup_mask_flat
+    if not np.any(train_valid_flat):
+        raise ValueError("No fine pixels are both feature-valid and matched to lookup coarse cells.")
+    train_valid_cell_ids_flat = cell_ids.reshape(-1)[train_valid_flat].astype(np.int64, copy=False)
+    compact_idx_np = np.array([cellid_to_compact[int(cid)] for cid in train_valid_cell_ids_flat], dtype=np.int64)
+    valid_linear_idx_np = np.where(train_valid_flat)[0].astype(np.int64, copy=False)
+    represented_cell_idx_np = np.unique(compact_idx_np).astype(np.int64, copy=False)
+    allocation_mask = train_valid_flat.reshape(h, w)
     n_coarse = int(coarse_targets_np.shape[0])
     print(f"[INFO] Number of coarse cells: {n_coarse}")
+    print(f"[INFO] Coarse cells represented by allocation pixels: {represented_cell_idx_np.size}")
+    print(f"[INFO] Fine pixels used for allocation: {valid_linear_idx_np.size:,}")
     print(f"[INFO] Total target mass ({args.value_column}): {coarse_targets_np.sum():.4f}")
 
     # tensors
     x_t = torch.from_numpy(x_std[None, ...]).to(device=device, dtype=torch.float32)
-    valid_t = torch.from_numpy(valid_mask.astype(np.float32)[None, None, ...]).to(device=device, dtype=torch.float32)
+    valid_t = torch.from_numpy(allocation_mask.astype(np.float32)[None, None, ...]).to(device=device, dtype=torch.float32)
     wsf_t = torch.from_numpy(wsf_support[None, None, ...]).to(device=device, dtype=torch.float32)
+    valid_linear_idx_t = torch.from_numpy(valid_linear_idx_np).to(device=device, dtype=torch.long)
     compact_idx_t = torch.from_numpy(compact_idx_np).to(device=device, dtype=torch.long)
+    represented_cell_idx_t = torch.from_numpy(represented_cell_idx_np).to(device=device, dtype=torch.long)
     coarse_targets_t = torch.from_numpy(coarse_targets_np).to(device=device, dtype=torch.float32)
 
     model = SmallConvNet(in_channels=x_std.shape[0], hidden=args.hidden, depth=args.depth).to(device)
@@ -414,29 +469,37 @@ def main() -> None:
         model.train()
         optimizer.zero_grad()
 
-        pred = model(x_t) * valid_t  # (1,1,H,W)
-        pred_flat_valid = pred.reshape(-1)[torch.from_numpy(valid_mask_flat).to(device=device)]
-        coarse_pred = aggregate_to_cells(pred_flat_valid, compact_idx_t, n_coarse)
+        score = model(x_t) * valid_t  # raw positive score surface, (1,1,H,W)
+        pred_mass = normalize_scores_by_cell(
+            score=score,
+            valid_linear_idx=valid_linear_idx_t,
+            compact_idx_valid=compact_idx_t,
+            coarse_targets=coarse_targets_t,
+            n_cells=n_coarse,
+        )
+        pred_mass_flat_valid = pred_mass.reshape(-1).index_select(0, valid_linear_idx_t)
+        coarse_mass = aggregate_to_cells(pred_mass_flat_valid, compact_idx_t, n_coarse)
+        coarse_mass_error = coarse_mass.index_select(0, represented_cell_idx_t) - coarse_targets_t.index_select(
+            0, represented_cell_idx_t
+        )
+        mass_preservation_rmse = torch.sqrt(torch.mean(coarse_mass_error**2))
 
-        # coarse_loss = F.mse_loss(coarse_pred, coarse_targets_t)
-        scale = coarse_targets_t.mean() + 1e-6
-        coarse_loss = F.mse_loss(coarse_pred / scale, coarse_targets_t / scale)
-        tv = tv_loss_2d(pred, valid_t)
+        tv = tv_loss_2d(pred_mass, valid_t)
 
-        total_mass = pred.sum() + 1e-8
-        outside_mass = (pred * (1.0 - wsf_t)).sum()
+        total_mass = pred_mass.sum() + 1e-8
+        outside_mass = (pred_mass * (1.0 - wsf_t)).sum()
         wsf_loss = outside_mass / total_mass
 
-        loss = coarse_loss + args.tv_weight * tv + args.wsf_weight * wsf_loss
+        loss = args.tv_weight * tv + args.wsf_weight * wsf_loss
         loss.backward()
         optimizer.step()
 
         record = {
             "epoch": epoch,
             "loss": float(loss.detach().cpu().item()),
-            "coarse_loss": float(coarse_loss.detach().cpu().item()),
             "tv_loss": float(tv.detach().cpu().item()),
             "wsf_loss": float(wsf_loss.detach().cpu().item()),
+            "mass_preservation_rmse": float(mass_preservation_rmse.detach().cpu().item()),
         }
         history.append(record)
 
@@ -444,31 +507,34 @@ def main() -> None:
             print(
                 f"[INFO] Epoch {epoch:04d} | "
                 f"loss={record['loss']:.4f} | "
-                f"coarse={record['coarse_loss']:.4f} | "
                 f"tv={record['tv_loss']:.4f} | "
-                f"wsf={record['wsf_loss']:.6f}"
+                f"wsf={record['wsf_loss']:.6f} | "
+                f"mass_rmse={record['mass_preservation_rmse']:.6g}"
             )
 
     # inference
     model.eval()
     with torch.no_grad():
-        pred = model(x_t) * valid_t
-    pred_np = pred.squeeze().detach().cpu().numpy().astype(np.float32, copy=False)
-    pred_np[~valid_mask] = np.nan
+        score = model(x_t) * valid_t
+        pred_mass = normalize_scores_by_cell(
+            score=score,
+            valid_linear_idx=valid_linear_idx_t,
+            compact_idx_valid=compact_idx_t,
+            coarse_targets=coarse_targets_t,
+            n_cells=n_coarse,
+        )
+    pred_np = score.squeeze().detach().cpu().numpy().astype(np.float32, copy=False)
+    pred_np[~allocation_mask] = np.nan
 
-    pred_norm_np = renormalize_by_cell(
-        raw_pred=np.nan_to_num(pred_np, nan=0.0),
-        cell_ids=cell_ids,
-        lookup=lookup,
-        value_column_name=args.value_column,
-    ).astype(np.float32, copy=False)
-    pred_norm_np[~valid_mask] = np.nan
+    pred_norm_np = pred_mass.squeeze().detach().cpu().numpy().astype(np.float32, copy=False)
+    pred_norm_np[~allocation_mask] = np.nan
 
     metrics = compute_metrics(
         pred=np.nan_to_num(pred_np, nan=0.0),
         pred_norm=pred_norm_np.copy(),
         cell_ids=cell_ids,
         lookup=lookup,
+        valid_mask=allocation_mask,
     )
 
     # additional WSF diagnostics
@@ -478,18 +544,19 @@ def main() -> None:
     norm_inside_wsf = float(np.nansum(np.where(wsf_support > 0, np.nan_to_num(pred_norm_np, nan=0.0), 0.0)))
     raw_inside_frac = raw_inside_wsf / raw_total_mass if raw_total_mass > 0 else np.nan
     norm_inside_frac = norm_inside_wsf / norm_total_mass if norm_total_mass > 0 else np.nan
-    metrics["raw_mass_fraction_inside_wsf"] = float(raw_inside_frac)
+    metrics["raw_score_mass_fraction_inside_wsf"] = float(raw_inside_frac)
     metrics["norm_mass_fraction_inside_wsf"] = float(norm_inside_frac)
+    metrics["norm_mass_fraction_outside_wsf"] = float(1.0 - norm_inside_frac) if np.isfinite(norm_inside_frac) else np.nan
 
     pred_out = Path(args.pred_out).expanduser().resolve()
     pred_norm_out = Path(args.pred_norm_out).expanduser().resolve()
     report_out = Path(args.report).expanduser().resolve()
 
     write_raster(pred_out, pred_np, profile)
-    print(f"[INFO] Saved raw prediction raster to: {pred_out}")
+    print(f"[INFO] Saved raw CNN score raster to: {pred_out}")
 
     write_raster(pred_norm_out, pred_norm_np, profile)
-    print(f"[INFO] Saved renormalized prediction raster to: {pred_norm_out}")
+    print(f"[INFO] Saved mass-preserving normalized prediction raster to: {pred_norm_out}")
 
     if args.model_out:
         model_out = Path(args.model_out).expanduser().resolve()
@@ -514,10 +581,39 @@ def main() -> None:
         "value_column": args.value_column,
         "wsf_band": int(args.wsf_band),
         "valid_fine_pixels": int(valid_pixels),
+        "allocation_fine_pixels": int(valid_linear_idx_np.size),
         "n_coarse_cells": int(n_coarse),
+        "n_coarse_cells_represented_by_allocation_pixels": int(represented_cell_idx_np.size),
         "n_pca_bands": int(c_pca),
         "n_wsf_feature_bands": int(c_wsf),
         "channel_stats": channel_stats,
+        "output_descriptions": {
+            "pred_out": "raw positive CNN score surface for debugging; not mass-preserving",
+            "pred_norm_out": "differentiably normalized mass-preserving fine prediction",
+        },
+        "metric_groups": {
+            "raw_score_diagnostics": [
+                "raw_score_coarse_mae",
+                "raw_score_coarse_rmse",
+                "raw_score_total",
+                "raw_score_mass_fraction_inside_wsf",
+            ],
+            "mass_preservation_checks": [
+                "mass_preservation_mae",
+                "mass_preservation_rmse",
+                "mass_preservation_max_abs_error",
+                "mass_preservation_total_error",
+                "mass_preservation_cells_checked",
+            ],
+            "spatial_plausibility_diagnostics": [
+                "norm_mass_fraction_inside_wsf",
+                "norm_mass_fraction_outside_wsf",
+            ],
+        },
+        "metrics_note": (
+            "Mass-preservation fields are sanity checks from the enforced within-cell normalization, "
+            "not validation metrics for predictive skill."
+        ),
         "metrics": metrics,
         "history_tail": history[-10:],
     }
