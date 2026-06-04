@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 """
-Compare two prediction rasters against a reference raster.
+Compare three prediction rasters against a reference raster.
 
-This is a compact diagnostic for old-vs-new baseline comparisons. It reports
+This is a compact diagnostic for baseline-variant comparisons. It reports
 MAE, RMSE, bias, Pearson correlation, and a global masked SSIM-style score for
 each prediction against the same reference.
 
 Example
 -------
-python scripts/14_compare_two_predictions_metrics.py \
+python scripts/14_compare_three_predictions_metrics.py \
   --reference ~/data/GHSL_BUILD/cropped_ghsl_raw_10m.tif \
   --predictions ~/data/outputs/embed_wsf_norm.tif \
                 ~/data/outputs/embed_wsf_diffnorm_norm.tif \
-  --names embed_wsf embed_wsf_diffnorm \
-  --output-csv ~/data/outputs/old_vs_new_wsf_metrics.csv
+                ~/data/outputs/dilated_wsf_diffnorm_norm.tif \
+  --names embed_wsf embed_wsf_diffnorm dilated_wsf_diffnorm \
+  --output-csv ~/data/outputs/wsf_variant_metrics.csv
 
 The first prediction defines the metric grid, matching the convention used by
-09_evaluate_against_ghsl10m.py. The reference is aligned to that grid.
+09_evaluate_against_ghsl10m.py. The reference and other predictions are aligned
+to that grid when needed.
 """
 
 from __future__ import annotations
@@ -30,17 +32,17 @@ import numpy as np
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Compare two prediction rasters against one reference raster.")
+    p = argparse.ArgumentParser(description="Compare three prediction rasters against one reference raster.")
     p.add_argument("--reference", required=True, help="Reference raster used as the target for metrics.")
-    p.add_argument("--predictions", nargs=2, required=True, help="Exactly two prediction rasters to compare.")
-    p.add_argument("--names", nargs=2, default=None, help="Optional names for the two predictions.")
+    p.add_argument("--predictions", nargs=3, required=True, help="Exactly three prediction rasters to compare.")
+    p.add_argument("--names", nargs=3, default=None, help="Optional names for the three predictions.")
     p.add_argument("--output-csv", required=True, help="Output CSV path.")
     p.add_argument(
         "--resampling",
         choices=["nearest", "bilinear"],
         default="bilinear",
         help=(
-            "Resampling used if the reference or second prediction is not on the first prediction grid. "
+            "Resampling used if the reference or non-template predictions are not on the first prediction grid. "
             "Default: bilinear."
         ),
     )

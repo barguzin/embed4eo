@@ -2,14 +2,15 @@
 """
 08_compare_baselines.py
 
-Create a comparison figure for three downscaling baselines plus a 10 m GHSL reference:
+Create a comparison figure for four downscaling baselines plus a 10 m GHSL reference:
 - Baseline 0: WSF-uniform
 - Baseline 1: embeddings-only
 - Baseline 2: embeddings + WSF-guided
+- Baseline 2c: dilated residual embeddings + WSF hybrid diffnorm
 - Reference: GHSL 2019 10 m
 
 Main figure:
-    2 rows x 4 columns
+    2 rows x 5 columns
     top row    = fine-grid predictions / reference
     bottom row = same layers aggregated by factor N (default 10)
 
@@ -23,6 +24,7 @@ python 08_compare_baselines.py \
   --baseline0 ~/data/outputs/wsf_uniform_baseline.tif \
   --baseline1 ~/data/outputs/embed_only_norm.tif \
   --baseline2 ~/data/outputs/embed_wsf_norm.tif \
+  --baseline3 ~/data/outputs/dilated_wsf_diffnorm_norm.tif \
   --ghsl10m ~/data/GHSL_BUILD/cropped_ghsl_raw_10m.tif \
   --output ~/data/outputs/baseline_comparison.png \
   --agg-factor 10 \
@@ -46,12 +48,13 @@ from rasterio.warp import reproject
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Plot comparison of three baselines plus GHSL 10 m reference.")
+    p = argparse.ArgumentParser(description="Plot comparison of four baselines plus GHSL 10 m reference.")
     p.add_argument("--baseline0", required=True, help="Path to WSF-uniform baseline raster")
     p.add_argument("--baseline1", required=True, help="Path to embeddings-only baseline raster")
     p.add_argument("--baseline2", required=True, help="Path to embeddings+WSF baseline raster")
+    p.add_argument("--baseline3", required=True, help="Path to dilated embeddings+WSF hybrid diffnorm raster")
     p.add_argument("--ghsl10m", required=True, help="Path to GHSL 2019 10 m raster")
-    p.add_argument("--output", required=True, help="Output PNG for 2x4 baseline comparison")
+    p.add_argument("--output", required=True, help="Output PNG for 2x5 baseline comparison")
     p.add_argument("--agg-factor", type=int, default=10, help="Aggregation factor for lower row")
     p.add_argument("--title", default="Baseline comparison", help="Figure title")
     p.add_argument("--ghsl", default=None, help="Optional GHSL coarse raster for context figure")
@@ -167,15 +170,18 @@ def main():
     b0_path = Path(args.baseline0).expanduser().resolve()
     b1_path = Path(args.baseline1).expanduser().resolve()
     b2_path = Path(args.baseline2).expanduser().resolve()
+    b3_path = Path(args.baseline3).expanduser().resolve()
     ghsl10m_path = Path(args.ghsl10m).expanduser().resolve()
     out_path = Path(args.output).expanduser().resolve()
 
     b0, p0 = read_single_band(b0_path)
     b1, p1 = read_single_band(b1_path)
     b2, p2 = read_single_band(b2_path)
+    b3, p3 = read_single_band(b3_path)
 
     ensure_same_grid(p0, p1, "baseline0", "baseline1")
     ensure_same_grid(p0, p2, "baseline0", "baseline2")
+    ensure_same_grid(p0, p3, "baseline0", "baseline3")
 
     ghsl10 = align_to_target(ghsl10m_path, p0, Resampling.bilinear)
 
@@ -188,13 +194,14 @@ def main():
     b0_agg = aggregate_mean(b0, agg_factor)
     b1_agg = aggregate_mean(b1, agg_factor)
     b2_agg = aggregate_mean(b2, agg_factor)
+    b3_agg = aggregate_mean(b3, agg_factor)
     ghsl10_agg = aggregate_mean(ghsl10, agg_factor)
     agg_extent = aggregated_extent(p0, agg_factor)
 
-    fine_vmin, fine_vmax = robust_limits([b0, b1, b2, ghsl10], low=2, high=98)
-    agg_vmin, agg_vmax = robust_limits([b0_agg, b1_agg, b2_agg, ghsl10_agg], low=2, high=98)
+    fine_vmin, fine_vmax = robust_limits([b0, b1, b2, b3, ghsl10], low=2, high=98)
+    agg_vmin, agg_vmax = robust_limits([b0_agg, b1_agg, b2_agg, b3_agg, ghsl10_agg], low=2, high=98)
 
-    fig, axes = plt.subplots(2, 4, figsize=(22, 10), constrained_layout=True)
+    fig, axes = plt.subplots(2, 5, figsize=(27, 10), constrained_layout=True)
 
     add_image(
         axes[0, 0], b0, fine_extent,
@@ -215,8 +222,14 @@ def main():
         cbar_label="Allocated built-up (m² per 10 m pixel)"
     )
     add_image(
-        axes[0, 3], ghsl10, fine_extent,
-        title="D. GHSL 2019 10 m reference\n(m² per 10 m pixel)",
+        axes[0, 3], b3, fine_extent,
+        title="D. Baseline 2c: dilated hybrid diffnorm\n(m² per 10 m pixel)",
+        cmap="magma", vmin=fine_vmin, vmax=fine_vmax,
+        cbar_label="Allocated built-up (m² per 10 m pixel)"
+    )
+    add_image(
+        axes[0, 4], ghsl10, fine_extent,
+        title="E. GHSL 2019 10 m reference\n(m² per 10 m pixel)",
         cmap="magma", vmin=fine_vmin, vmax=fine_vmax,
         cbar_label="Built-up surface (m² per 10 m pixel)"
     )
@@ -240,8 +253,14 @@ def main():
         cbar_label="Mean allocated built-up (m² per 10 m pixel)"
     )
     add_image(
-        axes[1, 3], ghsl10_agg, agg_extent,
-        title=f"H. GHSL 2019 10 m aggregated ({agg_factor}×{agg_factor})\n(mean m² per 10 m pixel)",
+        axes[1, 3], b3_agg, agg_extent,
+        title=f"H. Baseline 2c aggregated ({agg_factor}×{agg_factor})\n(mean m² per 10 m pixel)",
+        cmap="magma", vmin=agg_vmin, vmax=agg_vmax,
+        cbar_label="Mean allocated built-up (m² per 10 m pixel)"
+    )
+    add_image(
+        axes[1, 4], ghsl10_agg, agg_extent,
+        title=f"I. GHSL 2019 10 m aggregated ({agg_factor}×{agg_factor})\n(mean m² per 10 m pixel)",
         cmap="magma", vmin=agg_vmin, vmax=agg_vmax,
         cbar_label="Mean built-up surface (m² per 10 m pixel)"
     )

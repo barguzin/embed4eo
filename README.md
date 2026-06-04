@@ -304,6 +304,135 @@ Use `embed_wsf_norm.tif` for the weak baseline and
 Keeping separate filenames avoids overwriting the baseline products during
 comparison runs.
 
+## Baseline 2c: Dilated Residual WSF Differentiable-Normalization Allocator
+
+This variant keeps the differentiable within-cell normalization objective from
+Baseline 2b, but changes the architecture. A randomly initialized dilated
+residual CNN predicts positive raw scores from embedding PCA bands and WSF
+features. The scores are then differentiably normalized within each GHSL coarse
+cell and multiplied by the coarse target. A hybrid loss also compares raw-score
+coarse-cell sums to the GHSL targets, restoring a supervised aggregate signal
+while keeping the final diffnorm allocation mass-preserving. To preserve
+fine-scale texture while reducing visible GHSL cell seams, the recommended run
+uses feature-edge-aware TV instead of plain TV and adds a small continuity
+penalty across neighboring pixels that fall in different GHSL coarse cells.
+
+```bash
+mamba run -n diss python scripts/15_train_residual_dilated_wsf_diffnorm.py \
+  --pca ~/data/aef_accra_2019/mosaic_accra_2019_pca8.tif \
+  --wsf-features ~/data/WSF_Data/cropped_wsf_features.tif \
+  --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
+  --lookup ~/data/GHSL_BUILD/cropped_ghsl_cell_lookup.csv \
+  --value-column ghsl_value_adj \
+  --pred-out ~/data/outputs/dilated_wsf_diffnorm_raw.tif \
+  --pred-norm-out ~/data/outputs/dilated_wsf_diffnorm_norm.tif \
+  --report ~/data/outputs/dilated_wsf_diffnorm_report.json \
+  --loss-plot ~/data/outputs/dilated_wsf_diffnorm_loss.png \
+  --model-out ~/data/outputs/dilated_wsf_diffnorm_model.pt \
+  --epochs 500 \
+  --lr 1e-3 \
+  --tv-weight 0.0 \
+  --edge-tv-weight 5e-5 \
+  --edge-tv-alpha 5.0 \
+  --boundary-weight 1e-4 \
+  --wsf-weight 0.02 \
+  --raw-coarse-weight 1.0 \
+  --score-floor 1e-6 \
+  --hidden 32 \
+  --depth 4 \
+  --dilations 1 2 4 8 \
+  --wsf-band 1
+```
+
+Use `dilated_wsf_diffnorm_norm.tif` as the mass-preserving prediction for
+validation comparisons.
+
+## Baseline 2d: Prior-Corrected WSF Differentiable-Normalization Allocator
+
+This experimental variant keeps the Baseline 2c hybrid diffnorm objective but
+constructs scores from a fixed WSF-derived prior and a learned log-score
+correction. The prior is intended to reintroduce WSF-like high-frequency roads,
+voids, and settlement texture while letting the neural model correct the prior
+before within-cell mass preservation is enforced.
+
+Recommended first run with blended WSF density prior:
+
+```bash
+mamba run -n diss python scripts/16_train_prior_corrected_wsf_diffnorm.py \
+  --pca ~/data/aef_accra_2019/mosaic_accra_2019_pca8.tif \
+  --wsf-features ~/data/WSF_Data/cropped_wsf_features.tif \
+  --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
+  --lookup ~/data/GHSL_BUILD/cropped_ghsl_cell_lookup.csv \
+  --value-column ghsl_value_adj \
+  --pred-out ~/data/outputs/prior_corrected_wsf_diffnorm_raw.tif \
+  --pred-norm-out ~/data/outputs/prior_corrected_wsf_diffnorm_norm.tif \
+  --prior-out ~/data/outputs/prior_corrected_wsf_prior.tif \
+  --report ~/data/outputs/prior_corrected_wsf_diffnorm_report.json \
+  --loss-plot ~/data/outputs/prior_corrected_wsf_diffnorm_loss.png \
+  --model-out ~/data/outputs/prior_corrected_wsf_diffnorm_model.pt \
+  --epochs 500 \
+  --lr 1e-3 \
+  --tv-weight 0.0 \
+  --edge-tv-weight 1e-5 \
+  --edge-tv-alpha 5.0 \
+  --boundary-weight 0.0 \
+  --wsf-weight 0.02 \
+  --raw-coarse-weight 1.0 \
+  --score-floor 1e-6 \
+  --prior-mode wsf_blend \
+  --prior-density-band 2 \
+  --prior-density2-band 3 \
+  --prior-blend-weight 0.5 \
+  --prior-power 1.0 \
+  --prior-temperature 1.0 \
+  --prior-floor 1e-3 \
+  --cap-weight 0.0 \
+  --hidden 32 \
+  --depth 4 \
+  --dilations 1 2 4 8 \
+  --wsf-band 1
+```
+
+Sharper detail-prior run:
+
+```bash
+mamba run -n diss python scripts/16_train_prior_corrected_wsf_diffnorm.py \
+  --pca ~/data/aef_accra_2019/mosaic_accra_2019_pca8.tif \
+  --wsf-features ~/data/WSF_Data/cropped_wsf_features.tif \
+  --cell-ids ~/data/GHSL_BUILD/cropped_ghsl_cell_ids.tif \
+  --lookup ~/data/GHSL_BUILD/cropped_ghsl_cell_lookup.csv \
+  --value-column ghsl_value_adj \
+  --pred-out ~/data/outputs/prior_detail_wsf_diffnorm_raw.tif \
+  --pred-norm-out ~/data/outputs/prior_detail_wsf_diffnorm_norm.tif \
+  --prior-out ~/data/outputs/prior_detail_wsf_prior.tif \
+  --report ~/data/outputs/prior_detail_wsf_diffnorm_report.json \
+  --loss-plot ~/data/outputs/prior_detail_wsf_diffnorm_loss.png \
+  --model-out ~/data/outputs/prior_detail_wsf_diffnorm_model.pt \
+  --epochs 500 \
+  --lr 1e-3 \
+  --tv-weight 0.0 \
+  --edge-tv-weight 1e-5 \
+  --edge-tv-alpha 5.0 \
+  --boundary-weight 0.0 \
+  --wsf-weight 0.02 \
+  --raw-coarse-weight 1.0 \
+  --score-floor 1e-6 \
+  --prior-mode wsf_detail \
+  --prior-density-band 2 \
+  --prior-density2-band 3 \
+  --prior-blend-weight 0.5 \
+  --prior-power 1.0 \
+  --prior-temperature 1.0 \
+  --prior-floor 1e-3 \
+  --detail-sigma 4 \
+  --detail-gamma 0.5 \
+  --cap-weight 0.0 \
+  --hidden 32 \
+  --depth 4 \
+  --dilations 1 2 4 8 \
+  --wsf-band 1
+```
+
 ## Visual Diagnostics
 
 Create a four-panel plot for the WSF-uniform baseline:
@@ -326,6 +455,7 @@ mamba run -n diss python scripts/08_compare_baselines.py \
   --baseline0 ~/data/outputs/wsf_uniform_baseline.tif \
   --baseline1 ~/data/outputs/embed_only_norm.tif \
   --baseline2 ~/data/outputs/embed_wsf_norm.tif \
+  --baseline3 ~/data/outputs/dilated_wsf_diffnorm_norm.tif \
   --ghsl10m ~/data/GHSL_BUILD/cropped_ghsl_raw_10m.tif \
   --output ~/data/outputs/baseline_comparison.png \
   --agg-factor 10 \
