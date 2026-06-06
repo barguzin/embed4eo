@@ -261,7 +261,12 @@ accra_bbox2 <- project(accra_bbox, crs(ghsl_10m_tile))
 # ghsl_raw_cropped <- crop(ghsl_10m_tile, accra_bbox2) # these do not overlap!!
 ghsl_raw_cropped2 <- crop(ghsl_10m_tile2, accra_bbox2)
 
-ghsl_raw_cropped2 <- project(ghsl_raw_cropped2, crs(embed_template))
+# GHSL BUILT-S is continuous, so use bilinear interpolation. Project first,
+# then resample explicitly to the embedding template so the validation proxy
+# has the same grid, origin, extent, and shape as model predictions.
+ghsl_raw_cropped2 <- project(ghsl_raw_cropped2, crs(embed_template), method = "bilinear")
+ghsl_raw_cropped2 <- resample(ghsl_raw_cropped2, embed_template, method = "bilinear")
+names(ghsl_raw_cropped2) <- "ghsl_raw_10m_proxy"
 
 # ghsl_cropped <- project(ghsl_cropped, "EPSG:4326")
 
